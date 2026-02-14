@@ -47,18 +47,18 @@ void noStroke(void);
 void fill(unsigned char r, unsigned char g, unsigned char b, unsigned char a);
 void noFill(void);
 
-void pointf(float x, float y);
-void linef(float x1, float y1, float x2, float y2);
-void rectf(float x, float y, float w, float h);
-void ellipsef(float x, float y, float rx, float ry);
-void trianglef(float x1, float y1, float x2, float y2, float x3, float y3);
+void point(float x, float y);
+void line(float x1, float y1, float x2, float y2);
+void rect(float x, float y, float w, float h);
+void ellipse(float x, float y, float rx, float ry);
+void triangle(float x1, float y1, float x2, float y2, float x3, float y3);
 
 /* Transforms */
 void pushMatrix(void);
 void popMatrix(void);
 void translatef(float x, float y);
-void rotatef(float degrees);
-void scalef(float sx, float sy);
+void rotate(float degrees);
+void scale(float sx, float sy);
 
 /* Images */
 PImage loadImage(const char *path);
@@ -70,7 +70,7 @@ int mousePressed(void);
 int keyPressed(void);
 
 /* Utils */
-float randomf(float min, float max);
+float random(float min, float max);
 long millis(void);
 
 /* User functions (Processing sketches use void setup() / void draw()) */
@@ -191,18 +191,18 @@ void fill(unsigned char r, unsigned char g, unsigned char b, unsigned char a) {
 void noFill(void) { g_doFill = 0; }
 
 /* Primitives */
-void pointf(float x, float y) { DrawPixel((int)x,(int)y, g_doStroke ? g_stroke : WHITE); }
-void linef(float x1, float y1, float x2, float y2) { DrawLine((int)x1,(int)y1,(int)x2,(int)y2, g_doStroke ? g_stroke : WHITE); }
-void rectf(float x, float y, float w, float h) {
+void point(float x, float y) { DrawPixel((int)x,(int)y, g_doStroke ? g_stroke : WHITE); }
+void line(float x1, float y1, float x2, float y2) { DrawLine((int)x1,(int)y1,(int)x2,(int)y2, g_doStroke ? g_stroke : WHITE); }
+void rect(float x, float y, float w, float h) {
     if (g_rectMode == CENTER) { x -= w*0.5f; y -= h*0.5f; }
     if (g_doFill) DrawRectangle((int)x,(int)y,(int)w,(int)h, g_fill);
     if (g_doStroke) DrawRectangleLines((int)x,(int)y,(int)w,(int)h, g_stroke);
 }
-void ellipsef(float x, float y, float rx, float ry) {
+void ellipse(float x, float y, float rx, float ry) {
     if (g_doFill) DrawEllipse((int)x,(int)y,(float)rx,(float)ry, g_fill);
     if (g_doStroke) DrawEllipseLines((int)x,(int)y,(float)rx,(float)ry, g_stroke);
 }
-void trianglef(float x1,float y1,float x2,float y2,float x3,float y3) {
+void triangle(float x1,float y1,float x2,float y2,float x3,float y3) {
     if (g_doFill) { Vector2 pts[3]={{x1,y1},{x2,y2},{x3,y3}}; DrawTriangle(pts[0],pts[1],pts[2], g_fill); }
     if (g_doStroke) {
         DrawLine((int)x1,(int)y1,(int)x2,(int)y2,g_stroke);
@@ -214,9 +214,9 @@ void trianglef(float x1,float y1,float x2,float y2,float x3,float y3) {
 /* Transforms */
 void pushMatrix(void){ rlPushMatrix(); }
 void popMatrix(void){ rlPopMatrix(); }
-void translatef(float x,float y){ rlTranslatef(x,y,0.0f); }
-void rotatef(float degrees){ rlRotatef(degrees,0.0f,0.0f,1.0f); }
-void scalef(float sx,float sy){ rlScalef(sx,sy,1.0f); }
+void translate(float x,float y){ rlTranslatef(x,y,0.0f); }
+void rotate(float degrees){ rlRotatef(degrees,0.0f,0.0f,1.0f); }
+void scale(float sx,float sy){ rlScalef(sx,sy,1.0f); }
 
 /* Images */
 PImage loadImage(const char *path) {
@@ -236,7 +236,7 @@ void drawImage(PImage img, float x,float y,float w,float h){
 /* Input & utils */
 int mousePressed(void){ return mouseButton != 0; }
 int keyPressed(void){ return keyIsPressed; }
-float randomf(float min,float max){ if(min>=max) return min; return min + (float)rand()/(float)RAND_MAX*(max-min); }
+float random(float min,float max){ if(min>=max) return min; return min + (float)rand()/(float)RAND_MAX*(max-min); }
 long millis(void){ return (long)(GetTime()*1000.0); }
 
 #endif /* PROCESSING_IMPLEMENTATION */
