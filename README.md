@@ -1,6 +1,6 @@
 # processing.h
 
-Ideally a single file C library that converts Processing calls into Raylib calls. Libraries are very similar.
+Ideally a single file C library that converts Processing calls into Raylib calls. Libraries are in logic very similar.
 
 # pde2c
 
