@@ -1,7 +1,7 @@
 // Very simple processing sketch
 
 void setup(){
-	size(640,480,"processing");
+	size(640,480);
 	
 }
 

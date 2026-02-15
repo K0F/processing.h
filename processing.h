@@ -126,9 +126,10 @@ typedef enum BLEND_MODE
 #ifdef PROCESSING_IMPLEMENTATION
 
 /* Internal globals */
-int width = 800;
-int height = 450;
-static const char *g_window_title = "processing";
+// PAL
+int width = 720;
+int height = 576;
+static const char *g_window_title = "processing.h";
 static int g_window_inited = 0;
 static Vector2 g_mouse_prev = {0,0};
 float mouseX = 0.f;
@@ -138,6 +139,7 @@ int pmouseY = 0;
 int mouseButton = 0;
 int keyIsPressed = 0;
 int frameCount = 0;
+float FPS = 50.0; // PAL progressive
 static Color g_stroke = {0,0,0,255};
 static int g_doStroke = 1;
 static Color g_fill = {255,255,255,255};
@@ -157,7 +159,7 @@ int size_with_title(int w, int h, const char *title) {
 int processing_run(void) {
     if (!g_window_inited) {
         InitWindow(width, height, g_window_title);
-        SetTargetFPS(60);
+        SetTargetFPS(FPS);
         g_window_inited = 1;
     }
 
