@@ -31,12 +31,13 @@ extern int pmouseX, pmouseY;
 extern int mouseButton;
 extern int keyIsPressed;
 extern int frameCount;
+extern char *window_name;
 
 /* Modes */
 enum { CORNER = 0, CENTER = 1 };
 
 /* Core API (canonical) */
-int size_with_title(int w, int h, const char *title);
+int size_with_title(int w, int h, char *title);
 int processing_run(void);
 
 void background_rgba(unsigned char r, unsigned char g, unsigned char b, unsigned char a);
@@ -80,16 +81,37 @@ extern void draw(void);
    - size(w,h) and size(w,h,title)
    - background(v), background(r,g,b), background(r,g,b,a)
 */
-static inline int size_with_title_wrapper(int w, int h, const char *title) {
-	width = w;
-	height = h;
-    return size_with_title(w, h, title ? title : "processing.h");
+/* Implementation functions */
+void size_2(int _width, int _height) {
+	width = _width;
+	height = _height;
+    printf("size_2: width=%d height=%d\n", width, height);
 }
-#define size(...) _SIZE_DISPATCH(__VA_ARGS__, size3, size2)(__VA_ARGS__)
-#define _SIZE_DISPATCH(_1,_2,_3,NAME,...) NAME
-static inline int size2(int w, int h) { return size_with_title_wrapper(w,h,NULL); }
-static inline int size3(int w, int h, const char *title) { return size_with_title_wrapper(w,h,title); }
+void size_3(int _width, int _height, char *name) {
+	width = _width;
+	height = _height;
+	window_name = name;
+    printf("size_3: width=%d height=%d name=%s\n", width, height, name);
+}
 
+/* Helper macros to count args (supports up to 3 args) */
+#define PP_NARG(...) PP_NARG_(__VA_ARGS__, PP_RSEQ_N())
+#define PP_NARG_(...) PP_ARG_N(__VA_ARGS__)
+#define PP_ARG_N(_1,_2,_3,N,...) N
+#define PP_RSEQ_N() 3,2,1,0
+
+/* Select the right wrapper based on arg count */
+#define PP_CONCAT(a,b) PP_CONCAT_(a,b)
+#define PP_CONCAT_(a,b) a##b
+
+#define size_picker2(count) PP_CONCAT(size_, count)
+#define size(...) PP_CONCAT(size_picker2(PP_NARG(__VA_ARGS__)), (__VA_ARGS__))
+
+/* Alternatively (clearer): expand to call correct implementation */
+#undef size
+#define size(...) \
+    PP_CONCAT(size_, PP_NARG(__VA_ARGS__))(__VA_ARGS__)
+    
 /* background overloads */
 static inline void background1(unsigned char v) { background_rgba(v,v,v,255); }
 static inline void background3(unsigned char r, unsigned char g, unsigned char b) { background_rgba(r,g,b,255); }
@@ -129,7 +151,7 @@ typedef enum BLEND_MODE
 // PAL
 int width = 720;
 int height = 576;
-static const char *g_window_title = "processing.h";
+char *window_name = "processing.h";
 static int g_window_inited = 0;
 static Vector2 g_mouse_prev = {0,0};
 float mouseX = 0.f;
@@ -149,16 +171,16 @@ static int g_rectMode = CORNER;
 /* Require rlgl */
 #include "rlgl.h"
 
-int size_with_title(int w, int h, const char *title) {
+int size_with_title(int w, int h, char *title) {
     if (w > 0) width = w;
     if (h > 0) height = h;
-    if (title && title[0]) g_window_title = title;
+    if (title && title[0]) window_name = title;
     return 0;
 }
 
 int processing_run(void) {
     if (!g_window_inited) {
-        InitWindow(width, height, g_window_title);
+        InitWindow(width, height, window_name);
         SetTargetFPS(FPS);
         g_window_inited = 1;
     }
