@@ -1,10 +1,11 @@
 # processing.h
 
-Ideally a single file C library that converts Processing calls into Raylib calls. Libraries are in logic very similar.
+Single file C library that converts Processing calls into C and Raylib calls.
 
 # pde2c
 
-A little utility that converts processing pde files into C source code and executable. Using Raylib. 
+A little utility that converts processing pde files into C source code and executable. Using Raylib.
+This in future should replace infamous Processing pre-processor, but porting code to C flawlessly. 
 
 This is very early proof of concept. Work in progress.
 
