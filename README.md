@@ -1,6 +1,6 @@
 # processing.h
 
-Single file C library that converts Processing calls into C and Raylib calls.
+Single file C library that converts Processing calls into C and Raylib calls. A proof of concept, not working fully at all.
 
 # pde2c
 
