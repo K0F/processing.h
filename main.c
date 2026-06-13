@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 float text_size = 15.0f;
+bool render = false;
 
 int main(void) {
     size(814, 576, "Processing Raylib");
@@ -50,7 +51,9 @@ int main(void) {
 		popMatrix();
         EndDrawing();
 
+        if(render)
         saveFrame("fr#####.png");
+
         frameCount++;
     }
 
