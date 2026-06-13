@@ -6,20 +6,25 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-typedef Font PFont; 
+#define width GetScreenWidth()
+#define height GetScreenHeight()
+#define mouseX GetMouseX()
+#define mouseY GetMouseY()
+#define mousePressed IsMouseButtonDown(MOUSE_BUTTON_LEFT)
+
+typedef Font PFont;
 
 static PFont _currentFont;
 static float _textSizeState = 12.0f;
-static float _textSpacing   = 1.0f;
-
-static Color _fillColor   = { 255, 255, 255, 255 };
+static float _textSpacing = 1.0f;
+static Color _fillColor = { 255, 255, 255, 255 };
 static Color _strokeColor = { 0, 0, 0, 255 };
-static bool  _useFill     = true;
-static bool  _useStroke   = true;
-static float _strokeW     = 1.0f;
+static bool _useFill = true;
+static bool _useStroke = true;
+static float _strokeW = 1.0f;
 
-static inline void size(int width, int height, const char *title) {
-    InitWindow(width, height, title);
+static inline void size(int w, int h, const char *title) {
+    InitWindow(w, h, title);
     SetTargetFPS(60);
     _currentFont = GetFontDefault();
 }
@@ -132,4 +137,12 @@ static inline void ellipse(float x, float y, float w, float h) {
     }
 }
 
-#endif // PROCESSING_H
+static inline float lerp(float start, float stop, float amt) {
+    return start + amt * (stop - start);
+}
+
+static inline float map(float value, float start1, float stop1, float start2, float stop2) {
+    return start2 + (stop2 - start2) * ((value - start1) / (stop1 - start1));
+}
+
+#endif

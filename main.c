@@ -2,11 +2,9 @@
 #include <stdio.h>
 
 float text_size = 24.0f;
-int width = 932;
-int height = 576;
 
 int main(void) {
-    size(width, height, "Processing Raylib");
+    size(814, 576, "Processing Raylib");
 
     PFont font = loadFont("terminus.ttf", text_size);
 
