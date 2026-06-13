@@ -1,14 +1,18 @@
 #include "processing.h"
 #include <stdio.h>
 
-float text_size = 15.0f;
+float text_size = 24.0f;
+int width = 932;
+int height = 576;
 
 int main(void) {
-    size(932, 576, "Processing Raylib");
+    size(width, height, "Processing Raylib");
 
     PFont font = loadFont("terminus.ttf", text_size);
 
     char frameString[32];
+
+	int frameCount = 0;
 
     while (!WindowShouldClose()) {
         snprintf(frameString, sizeof(frameString), "SYS_FPS: %d", GetFPS());
@@ -41,8 +45,14 @@ int main(void) {
         textSize(text_size);
         fill(200, 255);
         text("Vector rendering handles clean scale steps seamlessly.", 40, 270);
-
+		pushMatrix();
+		translate(width/2,height/2);
+		rotate(frameCount/60.0f * PI);
+		rect(-50,-50,100,100);
+		popMatrix();
         EndDrawing();
+
+        frameCount++;
     }
 
     UnloadFont(font);
