@@ -5,14 +5,16 @@
 #include "rlgl.h"
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdio.h>
 
-#define width GetScreenWidth()
-#define height GetScreenHeight()
-#define mouseX GetMouseX()
-#define mouseY GetMouseY()
-#define mousePressed IsMouseButtonDown(MOUSE_BUTTON_LEFT)
+static int width = 0;
+static int height = 0;
+static int mouseX = 0;
+static int mouseY = 0;
+static bool mousePressed = false;
 
 typedef Font PFont;
+typedef RenderTexture2D PGraphics;
 
 static PFont _currentFont;
 static float _textSizeState = 12.0f;
@@ -23,10 +25,40 @@ static bool _useFill = true;
 static bool _useStroke = true;
 static float _strokeW = 1.0f;
 
+static char _nfBuffers[4][64];
+static int _nfBufferIndex = 0;
+int frameCount = 0;
+
+Color *pixels = NULL;
+static Texture2D _pixelsTexture;
+
 static inline void size(int w, int h, const char *title) {
     InitWindow(w, h, title);
     SetTargetFPS(60);
     _currentFont = GetFontDefault();
+    
+    width = w;
+    height = h;
+    
+    pixels = (Color *)MemAlloc(w * h * sizeof(Color));
+    Image blank = GenImageColor(w, h, BLANK);
+    _pixelsTexture = LoadTextureFromImage(blank);
+    UnloadImage(blank);
+}
+
+static inline void beginDraw(void) {
+    width = GetScreenWidth();
+    height = GetScreenHeight();
+    mouseX = GetMouseX();
+    mouseY = GetMouseY();
+    mousePressed = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+    
+    BeginDrawing();
+}
+
+static inline void endDraw(void) {
+    EndDrawing();
+    frameCount++;
 }
 
 static inline void background(int gray) {
@@ -55,6 +87,95 @@ static inline void text(const char *str, float x, float y) {
     if (_useFill) {
         DrawTextEx(_currentFont, str, (Vector2){ (int)x, (int)y }, (float)((int)_textSizeState), _textSpacing, _fillColor);
     }
+}
+
+static inline void save(const char *filename) {
+    TakeScreenshot(filename);
+}
+
+static inline void saveFrame(const char *filename) {
+    const char *target = filename ? filename : "screen-####.png";
+    static char buffer[256];
+    int b_idx = 0;
+    int num_pads = 0;
+    for (int i = 0; target[i] != '\0' && b_idx < 250; i++) {
+        if (target[i] == '#') {
+            num_pads++;
+            if (target[i + 1] != '#') {
+                b_idx += snprintf(&buffer[b_idx], 256 - b_idx, "%0*d", num_pads, frameCount);
+                num_pads = 0;
+            }
+        } else {
+            buffer[b_idx++] = target[i];
+        }
+    }
+    buffer[b_idx] = '\0';
+    TakeScreenshot(buffer);
+}
+
+static inline const char* nfInt(int value, int digits) {
+    char *buf = _nfBuffers[_nfBufferIndex];
+    _nfBufferIndex = (_nfBufferIndex + 1) % 4;
+    snprintf(buf, 64, "%0*d", digits, value);
+    return buf;
+}
+
+static inline const char* nfFloat(float value, int left, int right) {
+    char *buf = _nfBuffers[_nfBufferIndex];
+    _nfBufferIndex = (_nfBufferIndex + 1) % 4;
+    char temp[64];
+    snprintf(temp, 64, "%.*f", right, (value < 0) ? -value : value);
+    int dot_pos = 0;
+    while (temp[dot_pos] != '.' && temp[dot_pos] != '\0') {
+        dot_pos++;
+    }
+    int missing = left - dot_pos;
+    int idx = 0;
+    if (value < 0) {
+        buf[idx++] = '-';
+    }
+    for (int i = 0; i < missing; i++) {
+        buf[idx++] = '0';
+    }
+    for (int i = 0; temp[i] != '\0'; i++) {
+        buf[idx++] = temp[i];
+    }
+    buf[idx] = '\0';
+    return buf;
+}
+
+static inline void loadPixels(void) {
+    Image img = LoadImageFromScreen();
+    Color *colors = LoadImageColors(img);
+    int count = width * height;
+    for (int i = 0; i < count; i++) {
+        pixels[i] = colors[i];
+    }
+    UnloadImageColors(colors);
+    UnloadImage(img);
+}
+
+static inline void updatePixels(void) {
+    UpdateTexture(_pixelsTexture, pixels);
+    DrawTexture(_pixelsTexture, 0, 0, WHITE);
+}
+
+static inline PGraphics createGraphics(int w, int h) {
+    PGraphics pg = LoadRenderTexture(w, h);
+    SetTextureFilter(pg.texture, TEXTURE_FILTER_POINT);
+    return pg;
+}
+
+static inline void beginGraphics(PGraphics pg) {
+    BeginTextureMode(pg);
+}
+
+static inline void endGraphics(void) {
+    EndTextureMode();
+}
+
+static inline void image(PGraphics pg, float x, float y) {
+    DrawTextureRec(pg.texture, (Rectangle){ 0, 0, (float)pg.texture.width, (float)-pg.texture.height }, (Vector2){ x, y }, WHITE);
 }
 
 static inline void pushMatrix(void) { rlPushMatrix(); }
@@ -143,6 +264,11 @@ static inline float lerp(float start, float stop, float amt) {
 
 static inline float map(float value, float start1, float stop1, float start2, float stop2) {
     return start2 + (stop2 - start2) * ((value - start1) / (stop1 - start1));
+}
+
+static inline void destroyProcessing(void) {
+    if (pixels) MemFree(pixels);
+    UnloadTexture(_pixelsTexture);
 }
 
 #endif

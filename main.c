@@ -1,7 +1,7 @@
 #include "processing.h"
 #include <stdio.h>
 
-float text_size = 24.0f;
+float text_size = 15.0f;
 
 int main(void) {
     size(814, 576, "Processing Raylib");
@@ -40,11 +40,13 @@ int main(void) {
         strokeWeight(1.0f);
         line(40, 240, 560, 240);
 
-        textSize(text_size);
         fill(200, 255);
+        noStroke();
+        
+        textSize(text_size);
         text("Vector rendering handles clean scale steps seamlessly.", 40, 270);
 		pushMatrix();
-		translate(width/2,height/2);
+		translate(width/2,height/2+100.0f);
 		rotate(frameCount/60.0f * PI);
 		rect(-50,-50,100,100);
 		popMatrix();
