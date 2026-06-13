@@ -10,8 +10,6 @@ int main(void) {
 
     char frameString[32];
 
-	int frameCount = 0;
-
     while (!WindowShouldClose()) {
         snprintf(frameString, sizeof(frameString), "SYS_FPS: %d", GetFPS());
 
@@ -52,6 +50,7 @@ int main(void) {
 		popMatrix();
         EndDrawing();
 
+        saveFrame("fr#####.png");
         frameCount++;
     }
 
