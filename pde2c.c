@@ -7,7 +7,6 @@
 
 #define MAX_LINE_LENGTH 1024
 
-
 // Tokenizer /////////////////////////
 bool is_keyword(const char *str) {
   const char *keywords[] = {
@@ -21,12 +20,19 @@ bool is_keyword(const char *str) {
   return false;
 }
 
+// Helper to identify data types for array conversions
+bool is_type_token(Token t) {
+  return (t.type == TOKEN_KEYWORD && 
+          (strcmp(t.text, "int") == 0 || strcmp(t.text, "float") == 0 || 
+           strcmp(t.text, "char") == 0 || strcmp(t.text, "double") == 0 || 
+           strcmp(t.text, "boolean") == 0 || strcmp(t.text, "color") == 0));
+}
+
 int tokenize(const char *source, Token *tokens) {
   int t_count = 0;
   int i = 0;
   int current_line = 1;
 
-  // whitespaces 
   while (source[i] != '\0') {
     if (source[i] == '\n') {
       current_line++;
@@ -68,7 +74,7 @@ int tokenize(const char *source, Token *tokens) {
     // strings
     if (source[i] == '"') {
       int start = i;
-      i++; // header
+      i++; 
       while (source[i] != '"' && source[i] != '\0') i++;
       int len = i - start + 1;
 
@@ -77,7 +83,7 @@ int tokenize(const char *source, Token *tokens) {
       tokens[t_count].text[len] = '\0';
       tokens[t_count].line = current_line;
       t_count++;
-      i++; // footer
+      i++; 
       continue;
     }
 
@@ -95,103 +101,47 @@ int tokenize(const char *source, Token *tokens) {
       continue;
     }
 
-// numbers
-if (isdigit(source[i])) {
-  int len = 0;
-  tokens[t_count].type = TOKEN_NUMBER;
-  while (isdigit(source[i]) || source[i] == '.' || source[i] == 'f') {
-    if (source[i] == '.' && !isdigit(source[i+1])) {
-      // Pokud za tečkou není číslo, je to metoda (např. 10.add) - stop číslu
-      break;
-    }
-    tokens[t_count].text[len++] = source[i++];
-  }
-  tokens[t_count].text[len] = '\0';
-  tokens[t_count].line = current_line;
-  t_count++;
-  continue;
-}
-
-// keywords
-if (isalpha(source[i]) || source[i] == '_') {
-  int len = 0;
-  while (isalnum(source[i]) || source[i] == '_') {
-    tokens[t_count].text[len++] = source[i++];
-  }
-  tokens[t_count].text[len] = '\0';
-
-  if (is_keyword(tokens[t_count].text)) {
-    tokens[t_count].type = TOKEN_KEYWORD;
-  } else {
-    tokens[t_count].type = TOKEN_IDENTIFIER;
-  }
-  tokens[t_count].line = current_line;
-  t_count++;
-  continue;
-}
-
-// weird symbols
-i++;
-}
-
-tokens[t_count].type = TOKEN_EOF;
-strcpy(tokens[t_count].text, "EOF");
-tokens[t_count].line = current_line;
-return t_count;
-}
-
-void replace_token(char *line, const char *old_tok, const char *new_tok) {
-  char buffer[MAX_LINE_LENGTH];
-  char *pos;
-
-  while ((pos = strstr(line, old_tok)) != NULL) {
-    int len_before = pos - line;
-    strncpy(buffer, line, len_before);
-    buffer[len_before] = '\0';
-
-    strcat(buffer, new_tok);
-
-    strcat(buffer, pos + strlen(old_tok));
-
-    strcpy(line, buffer);
-  }
-}
-
-void parse_vector_methods(char *line) {
-  char buffer[MAX_LINE_LENGTH];
-  char *dot_pos;
-
-  while ((dot_pos = strstr(line, ".add(")) != NULL) {
-    char *obj_start = dot_pos;
-    while (obj_start > line && *(obj_start - 1) != ' ' && *(obj_start - 1) != '\t' && *(obj_start - 1) != '(' && *(obj_start - 1) != ',') {
-      obj_start--;
+    // numbers
+    if (isdigit(source[i])) {
+      int len = 0;
+      tokens[t_count].type = TOKEN_NUMBER;
+      while (isdigit(source[i]) || source[i] == '.' || source[i] == 'f') {
+        if (source[i] == '.' && !isdigit(source[i+1])) {
+          break;
+        }
+        tokens[t_count].text[len++] = source[i++];
+      }
+      tokens[t_count].text[len] = '\0';
+      tokens[t_count].line = current_line;
+      t_count++;
+      continue;
     }
 
-    int obj_len = dot_pos - obj_start;
-    char obj_name[64];
-    strncpy(obj_name, obj_start, obj_len);
-    obj_name[obj_len] = '\0';
+    // keywords / identifiers
+    if (isalpha(source[i]) || source[i] == '_') {
+      int len = 0;
+      while (isalnum(source[i]) || source[i] == '_') {
+        tokens[t_count].text[len++] = source[i++];
+      }
+      tokens[t_count].text[len] = '\0';
 
-    char *arg_start = dot_pos + 5; // ".add(" len
-    char *arg_end = strchr(arg_start, ')');
-    if (!arg_end) break;
+      if (is_keyword(tokens[t_count].text)) {
+        tokens[t_count].type = TOKEN_KEYWORD;
+      } else {
+        tokens[t_count].type = TOKEN_IDENTIFIER;
+      }
+      tokens[t_count].line = current_line;
+      t_count++;
+      continue;
+    }
 
-    int arg_len = arg_end - arg_start;
-    char arg_name[64];
-    strncpy(arg_name, arg_start, arg_len);
-    arg_name[arg_len] = '\0';
-
-    int len_before = obj_start - line;
-    strncpy(buffer, line, len_before);
-    buffer[len_before] = '\0';
-
-    char replacement[256];
-    sprintf(replacement, "%s = pvector_add(%s, %s)", obj_name, obj_name, arg_name);
-    strcat(buffer, replacement);
-    strcat(buffer, arg_end + 1);
-
-    strcpy(line, buffer);
+    i++;
   }
+
+  tokens[t_count].type = TOKEN_EOF;
+  strcpy(tokens[t_count].text, "EOF");
+  tokens[t_count].line = current_line;
+  return t_count;
 }
 
 int main(int argc, char *argv[]) {
@@ -200,7 +150,6 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  // 1. OTEVŘENÍ A NAČTENÍ SOUBORU
   FILE *file = fopen(argv[1], "rb");
   if (!file) {
     perror("Chyba při otevírání souboru");
@@ -220,7 +169,6 @@ int main(int argc, char *argv[]) {
   source_buffer[read_bytes] = '\0';
   fclose(file);
 
-  // 2. ALOKACE A SPUŠTĚNÍ TOKENIZERU
   Token *tokens = malloc(sizeof(Token) * MAX_TOKENS);
   if (!tokens) {
     free(source_buffer);
@@ -229,36 +177,89 @@ int main(int argc, char *argv[]) {
 
   int num_tokens = tokenize(source_buffer, tokens);
 
-  printf("#include \"processing.h\"\n\n");
+  // Print framework header and native little-endian A-B-G-R color bit-packer
+  printf("#include \"processing.h\"\n");
+  printf("#define pack_color(r, g, b) (((uint32_t)255 << 24) | ((uint32_t)(b) << 16) | ((uint32_t)(g) << 8) | (uint32_t)(r))\n\n");
 
   int i = 0;
   while (i < num_tokens) {
     Token current = tokens[i];
 
+    // 1. Transform Processing Array declarations: "int[] mm" -> "int mm[]"
+    if (is_type_token(current) &&
+        (i + 3 < num_tokens) &&
+        tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "[") == 0 &&
+        tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "]") == 0 &&
+        tokens[i+3].type == TOKEN_IDENTIFIER)
+    {
+      const char *type_out = current.text;
+      if (strcmp(type_out, "boolean") == 0) type_out = "bool";
+      if (strcmp(type_out, "color") == 0) type_out = "uint32_t";
+      printf("%s %s[]", type_out, tokens[i+3].text);
+      i += 4;
+      continue;
+    }
+
+    // 2. Normalize pointer-to-literal array initialization: "int* mm = {" -> "int mm[] = {"
+    if (is_type_token(current) &&
+        (i + 4 < num_tokens) &&
+        tokens[i+1].type == TOKEN_OPERATOR && strcmp(tokens[i+1].text, "*") == 0 &&
+        tokens[i+2].type == TOKEN_IDENTIFIER &&
+        tokens[i+3].type == TOKEN_OPERATOR && strcmp(tokens[i+3].text, "=") == 0 &&
+        tokens[i+4].type == TOKEN_SYMBOL && strcmp(tokens[i+4].text, "{") == 0)
+    {
+      const char *type_out = current.text;
+      if (strcmp(type_out, "boolean") == 0) type_out = "bool";
+      if (strcmp(type_out, "color") == 0) type_out = "uint32_t";
+      printf("%s %s[] = {", type_out, tokens[i+2].text);
+      i += 5;
+      continue;
+    }
+
+    // 3. Size function translation
     if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "size") == 0) {
       printf("size_converted");
       i++;
       continue;
     }
 
-    // Transformace "new PVector(x, y)" -> "pvector(x, y)"
-    // Hledáme pattern: IDENTIFIER ("new") -> IDENTIFIER ("PVector") -> SYMBOL ("(")
+    // 4. Localized pixel pointer type conversion mapping
+    if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "pixels") == 0) {
+      printf("((uint32_t*)pixels)");
+      i++;
+      continue;
+    }
+
+    // 5. Transform "new PVector(x, y)" -> "pvector(x, y)"
     if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "new") == 0 &&
         (i + 2 < num_tokens) &&
         tokens[i+1].type == TOKEN_IDENTIFIER && strcmp(tokens[i+1].text, "PVector") == 0 &&
         tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "(") == 0)
     {
       printf("pvector");
-      i += 2; // Přeskočíme "new" a "PVector", v dalším kroku loopu se zpracuje "("
+      i += 2;
       continue;
     }
 
+    // 6. Map boolean keyword
     if (current.type == TOKEN_KEYWORD && strcmp(current.text, "boolean") == 0) {
       printf("bool ");
       i++;
       continue;
     }
 
+    // 7. Map color type vs color(...) constructor function split
+    if (current.type == TOKEN_KEYWORD && strcmp(current.text, "color") == 0) {
+      if (i + 1 < num_tokens && tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "(") == 0) {
+        printf("pack_color"); // Redirect function call to uint32 bit-packer
+      } else {
+        printf("uint32_t ");  // Redirect primitive type allocation
+      }
+      i++;
+      continue;
+    }
+
+    // 8. PVector object method rewriting
     if (current.type == TOKEN_IDENTIFIER &&
         (i + 3 < num_tokens) &&
         tokens[i+1].type == TOKEN_DOT &&
@@ -272,6 +273,7 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
+    // 9. Standardize environment entry point formatting
     if (current.type == TOKEN_KEYWORD && (strcmp(current.text, "setup") == 0 || strcmp(current.text, "draw") == 0)) {
       if (i + 2 < num_tokens && strcmp(tokens[i+1].text, "(") == 0 && strcmp(tokens[i+2].text, ")") == 0) {
         printf("%s(void)", current.text);
@@ -286,6 +288,7 @@ int main(int argc, char *argv[]) {
 
     printf("%s", current.text);
 
+    // Spacing rules
     if (current.type == TOKEN_SYMBOL && strcmp(current.text, ";") == 0) {
       printf("\n");
     } else if (current.type == TOKEN_OPERATOR || (current.type == TOKEN_SYMBOL && strcmp(current.text, ",") == 0)) {
@@ -312,5 +315,4 @@ int main(int argc, char *argv[]) {
   free(tokens);
   free(source_buffer);
   return 0;
-
 }

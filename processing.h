@@ -13,7 +13,6 @@
 #include <stdarg.h>
 #include <math.h>
 
-// Pokud v raylibu nebo jinde nemáš definované PI:
 #ifndef PI
 #define PI 3.14159265358979323846f
 #endif
@@ -46,40 +45,34 @@ int frameCount = 0;
 Color *pixels = NULL;
 static Texture2D _pixelsTexture;
 
-typedef uint32_t color;
-
 // macros ////////////////////////////////////////////////////////////////
 #define str(...) TextFormat(__VA_ARGS__)
 
-// 0. Color
-// Pack  RGBA into uint32_t (0xRRGGBBAA)
-#define color(r, g, b) (((uint32_t)(r) << 16) | ((uint32_t)(g) << 8) | (uint32_t)(b))
-
-// // 1. SIZE MACRO (přidán DUMMY na konec seznamu argumentů)
+// SIZE MACRO
 #define SIZE_CHOOSER(_1, _2, _3, NAME, ...) NAME
 #define size_converted(...) SIZE_CHOOSER(__VA_ARGS__, size3, size2, DUMMY)(__VA_ARGS__)
 
-// 2. BACKGROUND MACRO
+// BACKGROUND MACRO
 #define BACKGROUND_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
 #define background(...) BACKGROUND_CHOOSER(__VA_ARGS__, background4, background3, background2, background1, DUMMY)(__VA_ARGS__)
 
-// 3. FILL MACRO
+// FILL MACRO
 #define FILL_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
 #define fill(...) FILL_CHOOSER(__VA_ARGS__, fill4, fill3, fill2, fill1, DUMMY)(__VA_ARGS__)
 
-// 4. STROKE MACRO
+// STROKE MACRO
 #define STROKE_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
 #define stroke(...) STROKE_CHOOSER(__VA_ARGS__, stroke4, stroke3, stroke2, stroke1, DUMMY)(__VA_ARGS__)
 
-// 5. LINE MACRO
+// LINE MACRO
 #define LINE_CHOOSER(_1, _2, _3, _4, _5, _6, NAME, ...) NAME
 #define line(...) LINE_CHOOSER(__VA_ARGS__, line6, dummy_error, line4, DUMMY)(__VA_ARGS__)
 
-// 6. PVECTOR MACRO
+// PVECTOR MACRO
 #define PV_CHOOSER(_1, _2, _3, NAME, ...) NAME
 #define pvector(...) PV_CHOOSER(__VA_ARGS__, pvector3D, pvector2D, DUMMY)(__VA_ARGS__)
 
-// 7. RANDOM
+// RANDOM
 #define RANDOM_CHOOSER(_1, _2, NAME, ...) NAME
 #define random(...) RANDOM_CHOOSER(__VA_ARGS__, random2, random1)(__VA_ARGS__)
 
@@ -109,14 +102,14 @@ static inline void textFont(PFont font) {
 static inline void textSize(float size) {
   _textSizeState = size;
 }
-// Upravená definice pro správné oddělení textu a souřadnic
+
 static inline void text(const char *format, float x, float y, ...) {
     if (!_useFill) return;
 
     static char text_buffer[1024];
 
     va_list args;
-    va_start(args, y); // y je poslední známý argument před variadickým seznamem
+    va_start(args, y); 
     
     vsnprintf(text_buffer, sizeof(text_buffer), format, args);
     
@@ -149,7 +142,6 @@ static inline void println(const char *format, ...) {
 static inline void load_default_font(void) {
   main_font = LoadFontEx("terminus.ttf", current_text_size, NULL, 0);
 
-  // I hate this
   if (main_font.texture.id <= 0) {
     main_font = LoadFontEx("/home/kof/src/RaylibProcessing/terminus.ttf", current_text_size, NULL, 0);
   }
@@ -164,12 +156,9 @@ static inline void load_default_font(void) {
 
 // size /////////////////////////////////////////////////////////
 static inline void size3(int w, int h, const char *title) {
-  // SetConfigFlags(FLAG_MSAA_4X_HINT);
-
   InitWindow(w, h, title);
   load_default_font();
   SetTargetFPS(60);
-
 
   width = w;
   height = h;
@@ -319,7 +308,6 @@ static inline void endGraphics(void) {
   EndTextureMode();
 }
 
-
 static inline void image(PGraphics pg, float x, float y) {
   DrawTextureRec(pg.texture, (Rectangle){ 0, 0, (float)pg.texture.width, (float)-pg.texture.height }, (Vector2){ x, y }, WHITE);
 }
@@ -379,7 +367,6 @@ static inline void stroke1(uint32_t c) {
   if (c <= 255) {
     stroke4(c, c, c, 255);
   } else {
-    // HTML def
     uint8_t r = (c >> 16) & 0xFF;
     uint8_t g = (c >> 8)  & 0xFF;
     uint8_t b = c         & 0xFF;
@@ -398,11 +385,8 @@ static inline void strokeWeight(float weight) {
 static inline void line6(float x1, float y1, float z1, float x2, float y2, float z2) {
   if (_useStroke) {
     if (_strokeW <= 1.0f) {
-      // Použijeme 3D kreslení linky, když už máme Z souřadnice
       DrawLine3D((Vector3){ x1, y1, z1 }, (Vector3){ x2, y2, z2 }, _strokeColor);
     } else {
-      // Raylib nemá tlusté čáry ve 3D nativně přes DrawLineEx, 
-      // pro 2D (z=0) použijeme DrawLineEx, pro čisté 3D padá zpět na tenkou čáru nebo 2D průmět
       DrawLineEx((Vector2){ x1, y1 }, (Vector2){ x2, y2 }, _strokeW, _strokeColor);
     }
   }
@@ -556,8 +540,6 @@ static inline PVector pvector_random2D(void) {
   float angle = ((float)rand() / (float)RAND_MAX) * 2.0f * PI;
   return (PVector){ cosf(angle), sinf(angle), 0.0f };
 }
-
-
 
 // defer //////////////////////////////////////////////////////////////////
 
