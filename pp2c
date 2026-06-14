@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+
+set -e # kill if it fails
+
+# Path to processing.h (pls modify)
+PROCESSING_H_PATH="/home/kof/src/RaylibProcessing/processing.h"
+
+if [ -z "$1" ]; then
+  TARGET=`pwd`
+else
+  TARGET=$(realpath "$1")
+fi
+
+
+
+
+if [ -d "$TARGET" ]; then
+    SKETCH_DIR="$TARGET"
+    SKETCH_NAME=$(basename "$SKETCH_DIR")
+    MAIN_PDE="$SKETCH_DIR/$SKETCH_NAME.pde"
+elif [ -f "$TARGET" ] && [ "${TARGET##*.}" = "pde" ]; then
+    MAIN_PDE="$TARGET"
+    SKETCH_DIR=$(dirname "$MAIN_PDE")
+    SKETCH_NAME=$(basename "$SKETCH_DIR")
+else
+    echo "Error: Invalid target, it has to be sketch folder of .pde file."
+    exit 1
+fi
+
+if [ ! -f "$MAIN_PDE" ]; then
+    echo "Error: Main sketch file should be in the folder of the same name!"
+    echo "Expected: $SKETCH_DIR/$(basename "$SKETCH_DIR").pde"
+    exit 1
+fi
+
+BUILD_DIR=$(mktemp -d -t pde-build.XXXXXX)
+
+trap 'rm -rf "$BUILD_DIR"' EXIT
+
+COMBINED_PDE="$BUILD_DIR/combined.pde"
+OUTPUT_C="$BUILD_DIR/sketch.c"
+BINARY="$BUILD_DIR/$SKETCH_NAME"
+
+echo "Concating sketch: $SKETCH_NAME"
+
+cat "$MAIN_PDE" > "$COMBINED_PDE"
+echo "" >> "$COMBINED_PDE" # Prevence, pokud chybí newline na konci souboru
+
+for f in "$SKETCH_DIR"/*.pde; do
+    if [ -f "$f" ] && [ "$f" != "$MAIN_PDE" ]; then
+        echo "// --- Tab: $(basename "$f") ---" >> "$COMBINED_PDE"
+        cat "$f" >> "$COMBINED_PDE"
+        echo "" >> "$COMBINED_PDE"
+    fi
+done
+
+# html color mashing
+# sed -E 's/#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})/0x\1, 0x\2, 0x\3/g' "$COMBINED_PDE" > "$COMBINED_PDE.tmp" && mv "$COMBINED_PDE.tmp" "$COMBINED_PDE" 
+
+# flag -I in gcc?
+cp "$PROCESSING_H_PATH" "$BUILD_DIR/processing.h"
+
+if ! pde2c "$COMBINED_PDE" > "$OUTPUT_C"; then
+    echo "Error: Transpil failed!"
+    exit 1
+fi
+
+echo "Compiling in $BUILD_DIR..."
+gcc "$OUTPUT_C" -o "$BINARY" -O2 -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+
+echo "Running..."
+(cd "$SKETCH_DIR" && "$BINARY")
