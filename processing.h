@@ -14,12 +14,8 @@
 #define PI 3.14159265358979323846f
 #endif
 
-// Přidat: Makro, které přeloží provizorní size_converted na tvou raylib/processing size funkci
-#define size_converted(w, h) size(w, h, "Pde2C Engine")
-
-
-static int width = 0;
-static int height = 0;
+static int width = 814;
+static int height = 576;
 static int mouseX = 0;
 static int mouseY = 0;
 static bool mousePressed = false;
@@ -43,7 +39,9 @@ int frameCount = 0;
 Color *pixels = NULL;
 static Texture2D _pixelsTexture;
 
-static inline void size(int w, int h, const char *title) {
+
+// size /////////////////////////////////////////////////////////
+static inline void size3(int w, int h, const char *title) {
     InitWindow(w, h, title);
     SetTargetFPS(60);
     _currentFont = GetFontDefault();
@@ -57,36 +55,21 @@ static inline void size(int w, int h, const char *title) {
     UnloadImage(blank);
 }
 
-static inline void beginDraw(void) {
-    width = GetScreenWidth();
-    height = GetScreenHeight();
-    mouseX = GetMouseX();
-    mouseY = GetMouseY();
-    mousePressed = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
-    
-    BeginDrawing();
+static inline void size2(int w, int h) {
+    size3(w, h, "Processing Ray 0.1");
 }
 
-static inline void endDraw(void) {
-    EndDrawing();
-    frameCount++;
-}
-
-
+// size macro /////////////////////////////////////////////
+#define SIZE_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define size_converted(...) SIZE_CHOOSER(__VA_ARGS__, size3, size2)(__VA_ARGS__)
 
 // background ////////////////////////////////////////////
-/*
-static inline void background(int gray) {
-    ClearBackground((Color){ gray, gray, gray, 255 });
-}
-
-static inline void backgroundRGB(int r, int g, int b) {
-    ClearBackground((Color){ r, g, b, 255 });
-}
-*/
+static Color current_background_color = { 200, 200, 200, 255 };
 
 static inline void background4(float r, float g, float b, float a) {
-    ClearBackground((Color){ (unsigned char)r, (unsigned char)g, (unsigned char)b, (unsigned char)a });
+    current_background_color = (Color){ (unsigned char)r, (unsigned char)g, (unsigned char)b, (unsigned char)a };
+    // Vyčistíme i hned, pokud se volá uprostřed draw
+    ClearBackground(current_background_color);
 }
 
 static inline void background3(float r, float g, float b) {
@@ -103,6 +86,24 @@ static inline void background1(float gray) {
 
 #define BACKGROUND_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
 #define background(...) BACKGROUND_CHOOSER(__VA_ARGS__, background4, background3, background2, background1)(__VA_ARGS__)
+
+
+static inline void beginDraw(void) {
+    width = GetScreenWidth();
+    height = GetScreenHeight();
+    mouseX = GetMouseX();
+    mouseY = GetMouseY();
+    mousePressed = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+    
+    BeginDrawing();
+    // Automatické vyčištění bufferu na začátku snímku fixuje blikání
+    ClearBackground(current_background_color);
+}
+
+static inline void endDraw(void) {
+    EndDrawing();
+    frameCount++;
+}
 
 
 // PFont ////////////////////////////////////////////////////////////////
@@ -234,7 +235,8 @@ static inline void scale(float s) { rlScalef(s, s, 1.0f); }
 // fill ////////////////////////////
 
 static inline void fill4(float r, float g, float b, float a) {
-    fill4(r, g, b, a);
+    _useFill = true;
+    _fillColor = (Color){ (unsigned char)r, (unsigned char)g, (unsigned char)b, (unsigned char)a };
 }
 
 static inline void fill3(float r, float g, float b) {
@@ -257,7 +259,8 @@ static inline void noFill(void) { _useFill = false; }
 // stroke /////////////////////////////////
 
 static inline void stroke4(float r, float g, float b, float a) {
-    stroke4(r, g, b, a);
+    _useStroke = true;
+    _strokeColor = (Color){ (unsigned char)r, (unsigned char)g, (unsigned char)b, (unsigned char)a };
 }
 
 static inline void stroke3(float r, float g, float b) {
@@ -284,12 +287,14 @@ static inline void strokeWeight(float weight) {
 
 
 // line //////////////////
-//
 static inline void line6(float x1, float y1, float z1, float x2, float y2, float z2) {
     if (_useStroke) {
         if (_strokeW <= 1.0f) {
-            DrawLine((int)x1, (int)y1, (int)x2, (int)y2, _strokeColor);
+            // Použijeme 3D kreslení linky, když už máme Z souřadnice
+            DrawLine3D((Vector3){ x1, y1, z1 }, (Vector3){ x2, y2, z2 }, _strokeColor);
         } else {
+            // Raylib nemá tlusté čáry ve 3D nativně přes DrawLineEx, 
+            // pro 2D (z=0) použijeme DrawLineEx, pro čisté 3D padá zpět na tenkou čáru nebo 2D průmět
             DrawLineEx((Vector2){ x1, y1 }, (Vector2){ x2, y2 }, _strokeW, _strokeColor);
         }
     }

@@ -1,6 +1,6 @@
 
 void setup(){
-  size(320,240);
+  size(814,576);
 }
 
 void draw(){
@@ -9,9 +9,12 @@ void draw(){
   pos.add(vel);
   
   background(255);
+  
   pushMatrix();
   translate(width/2,height/2);
+  
   stroke(0);
   line(0,0,pos.x,pos.y);
+  
   popMatrix();
 }
