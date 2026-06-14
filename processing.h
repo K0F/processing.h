@@ -106,30 +106,38 @@ static inline void textFont(PFont font) {
 }
 
 static inline void textSize(float size) {
-    _textSizeState = size;
+  _textSizeState = size;
 }
 
-static inline void text(const char *str, float x, float y) {
-  if (_useFill) {
-    DrawTextEx(_currentFont, str, (Vector2){ (int)x, (int)y }, (float)((int)_textSizeState), _textSpacing, _fillColor);
-  }
+static inline void text(const char *format, ...) {
+  if (!_useFill) return;
+
+  va_list args;
+  va_start(args, format);
+
+  const char *formatted_str = VTextFormat(format, args);
+
+  va_end(args);
+
+  DrawTextEx(_currentFont, formatted_str, (Vector2){ (int)mouseX, (int)mouseY }, (float)((int)_textSizeState), _textSpacing, _fillColor);
 }
+
 ///////////////////////////////////////////////////////////////////////////////////////////
 
 static inline void load_default_font(void) {
-    main_font = LoadFontEx("terminus.ttf", current_text_size, NULL, 0);
-   
-    // I hate this
-    if (main_font.texture.id <= 0) {
-        main_font = LoadFontEx("/home/kof/src/RaylibProcessing/terminus.ttf", current_text_size, NULL, 0);
-    }
-    
-    if (main_font.texture.id <= 0) {
-        main_font = GetFontDefault();
-    }
+  main_font = LoadFontEx("terminus.ttf", current_text_size, NULL, 0);
 
-    _currentFont = main_font;
-    SetTextureFilter(main_font.texture, TEXTURE_FILTER_POINT);
+  // I hate this
+  if (main_font.texture.id <= 0) {
+    main_font = LoadFontEx("/home/kof/src/RaylibProcessing/terminus.ttf", current_text_size, NULL, 0);
+  }
+
+  if (main_font.texture.id <= 0) {
+    main_font = GetFontDefault();
+  }
+
+  _currentFont = main_font;
+  SetTextureFilter(main_font.texture, TEXTURE_FILTER_POINT);
 }
 
 // size /////////////////////////////////////////////////////////
@@ -172,14 +180,14 @@ static inline void background2(float gray, float alpha) {
 }
 
 static inline void background1(uint32_t c) {
-    if (c <= 255) {
-        background4(c, c, c, 255);
-    } else {
-        uint8_t r = (c >> 16) & 0xFF;
-        uint8_t g = (c >> 8)  & 0xFF;
-        uint8_t b = c         & 0xFF;
-        background4(r, g, b, 255);
-    }
+  if (c <= 255) {
+    background4(c, c, c, 255);
+  } else {
+    uint8_t r = (c >> 16) & 0xFF;
+    uint8_t g = (c >> 8)  & 0xFF;
+    uint8_t b = c         & 0xFF;
+    background4(r, g, b, 255);
+  }
 }
 
 static inline void beginDraw(void) {
@@ -318,14 +326,14 @@ static inline void fill2(float gray, float alpha) {
 }
 
 static inline void fill1(uint32_t c) {
-    if (c <= 255) {
-        fill4(c, c, c, 255);
-    } else {
-        uint8_t r = (c >> 16) & 0xFF;
-        uint8_t g = (c >> 8)  & 0xFF;
-        uint8_t b = c         & 0xFF;
-        fill4(r, g, b, 255);
-    }
+  if (c <= 255) {
+    fill4(c, c, c, 255);
+  } else {
+    uint8_t r = (c >> 16) & 0xFF;
+    uint8_t g = (c >> 8)  & 0xFF;
+    uint8_t b = c         & 0xFF;
+    fill4(r, g, b, 255);
+  }
 }
 
 static inline void noFill(void) { _useFill = false; }
@@ -346,15 +354,15 @@ static inline void stroke2(float gray, float alpha) {
 }
 
 static inline void stroke1(uint32_t c) {
-    if (c <= 255) {
-        stroke4(c, c, c, 255);
-    } else {
-        // HTML def
-        uint8_t r = (c >> 16) & 0xFF;
-        uint8_t g = (c >> 8)  & 0xFF;
-        uint8_t b = c         & 0xFF;
-        stroke4(r, g, b, 255);
-    }
+  if (c <= 255) {
+    stroke4(c, c, c, 255);
+  } else {
+    // HTML def
+    uint8_t r = (c >> 16) & 0xFF;
+    uint8_t g = (c >> 8)  & 0xFF;
+    uint8_t b = c         & 0xFF;
+    stroke4(r, g, b, 255);
+  }
 }
 
 static inline void noStroke(void) { _useStroke = false; }
