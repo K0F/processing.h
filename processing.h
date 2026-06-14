@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <math.h>
 
 // Pokud v raylibu nebo jinde nemáš definované PI:
@@ -108,18 +109,39 @@ static inline void textFont(PFont font) {
 static inline void textSize(float size) {
   _textSizeState = size;
 }
+// Upravená definice pro správné oddělení textu a souřadnic
+static inline void text(const char *format, float x, float y, ...) {
+    if (!_useFill) return;
 
-static inline void text(const char *format, ...) {
-  if (!_useFill) return;
+    static char text_buffer[1024];
 
-  va_list args;
-  va_start(args, format);
+    va_list args;
+    va_start(args, y); // y je poslední známý argument před variadickým seznamem
+    
+    vsnprintf(text_buffer, sizeof(text_buffer), format, args);
+    
+    va_end(args);
 
-  const char *formatted_str = VTextFormat(format, args);
+    DrawTextEx(_currentFont, text_buffer, (Vector2){ (int)x, (int)y }, (float)((int)_textSizeState), _textSpacing, _fillColor);
+}
 
-  va_end(args);
+// print ////////////////////////////////////////////////////////////////////////////
 
-  DrawTextEx(_currentFont, formatted_str, (Vector2){ (int)mouseX, (int)mouseY }, (float)((int)_textSizeState), _textSpacing, _fillColor);
+static inline void print(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vprintf(format, args);
+    va_end(args);
+    fflush(stdout);
+}
+
+static inline void println(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vprintf(format, args);
+    va_end(args);
+    printf("\n");
+    fflush(stdout);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////
