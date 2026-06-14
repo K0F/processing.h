@@ -1,12 +1,13 @@
 #ifndef PROCESSING_H
 #define PROCESSING_H
 
+#include <stdio.h>
 #include "raylib.h"
 #include "rlgl.h"
 #include <stddef.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <math.h>
 
 // Pokud v raylibu nebo jinde nemáš definované PI:
@@ -69,6 +70,10 @@ static Texture2D _pixelsTexture;
 
 // size /////////////////////////////////////////////////////////
 static inline void size3(int w, int h, const char *title) {
+  // smooth () ?
+  // SetConfigFlags(FLAG_MSAA_4X_HINT);
+  // SetTextureFilter(_pixelsTexture, TEXTURE_FILTER_POINT);
+
   InitWindow(w, h, title);
   SetTargetFPS(60);
   _currentFont = GetFontDefault();
@@ -102,8 +107,15 @@ static inline void background2(float gray, float alpha) {
   background4(gray, gray, gray, alpha);
 }
 
-static inline void background1(float gray) {
-  background4(gray, gray, gray, 255.0f);
+static inline void background1(uint32_t c) {
+    if (c <= 255) {
+        background4(c, c, c, 255);
+    } else {
+        uint8_t r = (c >> 16) & 0xFF;
+        uint8_t g = (c >> 8)  & 0xFF;
+        uint8_t b = c         & 0xFF;
+        background4(r, g, b, 255);
+    }
 }
 
 static inline void beginDraw(void) {
@@ -264,8 +276,15 @@ static inline void fill2(float gray, float alpha) {
   fill4(gray, gray, gray, alpha);
 }
 
-static inline void fill1(float gray) {
-  fill4(gray, gray, gray, 255.0f);
+static inline void fill1(uint32_t c) {
+    if (c <= 255) {
+        fill4(c, c, c, 255);
+    } else {
+        uint8_t r = (c >> 16) & 0xFF;
+        uint8_t g = (c >> 8)  & 0xFF;
+        uint8_t b = c         & 0xFF;
+        fill4(r, g, b, 255);
+    }
 }
 
 static inline void noFill(void) { _useFill = false; }
@@ -285,8 +304,16 @@ static inline void stroke2(float gray, float alpha) {
   stroke4(gray, gray, gray, alpha);
 }
 
-static inline void stroke1(float gray) {
-  stroke4(gray, gray, gray, 255.0f);
+static inline void stroke1(uint32_t c) {
+    if (c <= 255) {
+        stroke4(c, c, c, 255);
+    } else {
+        // HTML def
+        uint8_t r = (c >> 16) & 0xFF;
+        uint8_t g = (c >> 8)  & 0xFF;
+        uint8_t b = c         & 0xFF;
+        stroke4(r, g, b, 255);
+    }
 }
 
 static inline void noStroke(void) { _useStroke = false; }

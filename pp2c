@@ -2,7 +2,7 @@
 
 set -e # kill if it fails
 
-# Path to processing.h (pls modify)
+# Path to processing.h
 PROCESSING_H_PATH="/home/kof/src/RaylibProcessing/processing.h"
 
 if [ -z "$1" ]; then
@@ -10,9 +10,6 @@ if [ -z "$1" ]; then
 else
   TARGET=$(realpath "$1")
 fi
-
-
-
 
 if [ -d "$TARGET" ]; then
     SKETCH_DIR="$TARGET"
@@ -54,16 +51,21 @@ for f in "$SKETCH_DIR"/*.pde; do
     fi
 done
 
-# html color mashing
-# sed -E 's/#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})/0x\1, 0x\2, 0x\3/g' "$COMBINED_PDE" > "$COMBINED_PDE.tmp" && mv "$COMBINED_PDE.tmp" "$COMBINED_PDE" 
+# HTML COLOR MASHING
+# Přepíše mřížku (#ffcc00) na čistý C hex formát (0xffcc00) přímo v combined.pde
+sed -i -E 's/#([0-9a-fA-F]{6})/HEX_COLOR_\1/g' "$COMBINED_PDE"
 
-# flag -I in gcc?
+# Kopírování headeru do build adresáře
 cp "$PROCESSING_H_PATH" "$BUILD_DIR/processing.h"
 
 if ! pde2c "$COMBINED_PDE" > "$OUTPUT_C"; then
     echo "Error: Transpil failed!"
     exit 1
 fi
+
+# HTML COLOR MASHING - Fáze 2: Překlopíme bezpečný název na čistý C hex literál pro GCC
+# Z HEX_COLOR_ffcc11 se v hotovém sketch.c stane 0xffcc11
+sed -i -E 's/HEX_COLOR_([0-9a-fA-F]{6})/0x\1/g' "$OUTPUT_C"
 
 echo "Compiling in $BUILD_DIR..."
 gcc "$OUTPUT_C" -o "$BINARY" -O2 -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
