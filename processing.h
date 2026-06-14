@@ -6,6 +6,17 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+
+// Pokud v raylibu nebo jinde nemáš definované PI:
+#ifndef PI
+#define PI 3.14159265358979323846f
+#endif
+
+// Přidat: Makro, které přeloží provizorní size_converted na tvou raylib/processing size funkci
+#define size_converted(w, h) size(w, h, "Pde2C Engine")
+
 
 static int width = 0;
 static int height = 0;
@@ -184,35 +195,61 @@ static inline void translate(float x, float y) { rlTranslatef(x, y, 0.0f); }
 static inline void rotate(float radians) { rlRotatef(radians * 57.295779513f, 0.0f, 0.0f, 1.0f); }
 static inline void scale(float s) { rlScalef(s, s, 1.0f); }
 
-static inline void fill(int gray, int alpha) {
-    _useFill = true;
-    _fillColor = (Color){ gray, gray, gray, alpha };
+// fill ////////////////////////////
+
+static inline void fill4(float r, float g, float b, float a) {
+    fill4(r, g, b, a);
 }
 
-static inline void fillRGB(int r, int g, int b, int a) {
-    _useFill = true;
-    _fillColor = (Color){ r, g, b, a };
+static inline void fill3(float r, float g, float b) {
+    fill4(r, g, b, 255.0f);
 }
+
+static inline void fill2(float gray, float alpha) {
+    fill4(gray, gray, gray, alpha);
+}
+
+static inline void fill1(float gray) {
+    fill4(gray, gray, gray, 255.0f);
+}
+
+#define FILL_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
+#define fill(...) FILL_CHOOSER(__VA_ARGS__, fill4, fill3, fill2, fill1)(__VA_ARGS__)
 
 static inline void noFill(void) { _useFill = false; }
 
-static inline void stroke(int gray, int alpha) {
-    _useStroke = true;
-    _strokeColor = (Color){ gray, gray, gray, alpha };
+// stroke /////////////////////////////////
+
+static inline void stroke4(float r, float g, float b, float a) {
 }
 
-static inline void strokeRGB(int r, int g, int b, int a) {
-    _useStroke = true;
-    _strokeColor = (Color){ r, g, b, a };
+static inline void stroke3(float r, float g, float b) {
+    stroke4(r, g, b, 255.0f);
 }
+
+static inline void stroke2(float gray, float alpha) {
+    stroke4(gray, gray, gray, alpha);
+}
+
+static inline void stroke1(float gray) {
+    stroke4(gray, gray, gray, 255.0f);
+}
+
+// stroke macro
+#define STROKE_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
+#define stroke(...) STROKE_CHOOSER(__VA_ARGS__, stroke4, stroke3, stroke2, stroke1)(__VA_ARGS__)
 
 static inline void noStroke(void) { _useStroke = false; }
+
 
 static inline void strokeWeight(float weight) {
     _strokeW = weight;
 }
 
-static inline void line(float x1, float y1, float x2, float y2) {
+
+// line //////////////////
+//
+static inline void line6(float x1, float y1, float z1, float x2, float y2, float z2) {
     if (_useStroke) {
         if (_strokeW <= 1.0f) {
             DrawLine((int)x1, (int)y1, (int)x2, (int)y2, _strokeColor);
@@ -221,6 +258,15 @@ static inline void line(float x1, float y1, float x2, float y2) {
         }
     }
 }
+
+// 4 argumenty: line(x1, y1, x2, y2) -> 2D verze, která tiše doplní Z souřadnice jako 0.0f
+static inline void line4(float x1, float y1, float x2, float y2) {
+    line6(x1, y1, 0.0f, x2, y2, 0.0f);
+}
+
+// Makro-výběrčí: Podle počtu argumentů skočí buď do line6 (3D) nebo line4 (2D)
+#define LINE_CHOOSER(_1, _2, _3, _4, _5, _6, NAME, ...) NAME
+#define line(...) LINE_CHOOSER(__VA_ARGS__, line6, dummy_error, line4)(__VA_ARGS__)
 
 static inline void rect(float x, float y, float w, float h) {
     if (_useFill) {
@@ -265,6 +311,110 @@ static inline float lerp(float start, float stop, float amt) {
 static inline float map(float value, float start1, float stop1, float start2, float stop2) {
     return start2 + (stop2 - start2) * ((value - start1) / (stop1 - start1));
 }
+
+// Vector math /////////////////////
+
+typedef struct {
+    float x;
+    float y;
+    float z;
+} PVector;
+
+
+
+static inline PVector pvector3D(float x, float y, float z) {
+    return (PVector){ x, y, z };
+}
+#define pvector2D(x, y) pvector3D(x, y, 0.0f)
+
+#define PV_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define pvector(...) PV_CHOOSER(__VA_ARGS__, pvector3D, pvector2D)(__VA_ARGS__)
+
+static inline PVector pvector_add(PVector v1, PVector v2) {
+    return (PVector){ v1.x + v2.x, v1.y + v2.y, v1.z + v2.z };
+}
+
+static inline PVector pvector_sub(PVector v1, PVector v2) {
+    return (PVector){ v1.x - v2.x, v1.y - v2.y, v1.z - v2.z };
+}
+
+static inline PVector pvector_mult(PVector v, float n) {
+    return (PVector){ v.x * n, v.y * n, v.z * n };
+}
+
+static inline PVector pvector_div(PVector v, float n) {
+    if (n == 0.0f) return v;
+    return (PVector){ v.x / n, v.y / n, v.z / n };
+}
+
+static inline float pvector_magSq(PVector v) {
+    return (v.x * v.x + v.y * v.y + v.z * v.z);
+}
+
+static inline float pvector_mag(PVector v) {
+    return sqrtf(pvector_magSq(v));
+}
+
+static inline float pvector_dist(PVector v1, PVector v2) {
+    return sqrtf(powf(v1.x - v2.x, 2) + powf(v1.y - v2.y, 2) + powf(v1.z - v2.z, 2));
+}
+
+static inline float pvector_dot(PVector v1, PVector v2) {
+    return (v1.x * v2.x + v1.y * v2.y + v1.z * v2.z);
+}
+
+static inline PVector pvector_cross(PVector v1, PVector v2) {
+    return (PVector){
+        v1.y * v2.z - v1.z * v2.y,
+        v1.z * v2.x - v1.x * v2.z,
+        v1.x * v2.y - v1.y * v2.x
+    };
+}
+
+static inline PVector pvector_normalize(PVector v) {
+    float m = pvector_mag(v);
+    if (m != 0.0f && m != 1.0f) {
+        return pvector_div(v, m);
+    }
+    return v;
+}
+
+static inline PVector pvector_limit(PVector v, float max) {
+    if (pvector_magSq(v) > max * max) {
+        return pvector_mult(pvector_normalize(v), max);
+    }
+    return v;
+}
+
+static inline PVector pvector_setMag(PVector v, float len) {
+    return pvector_mult(pvector_normalize(v), len);
+}
+
+static inline float pvector_heading(PVector v) {
+    return atan2f(v.y, v.x);
+}
+
+static inline PVector pvector_rotate(PVector v, float theta) {
+    float c = cosf(theta);
+    float s = sinf(theta);
+    return (PVector){ v.x * c - v.y * s, v.x * s + v.y * c, v.z };
+}
+
+static inline PVector pvector_lerp(PVector v1, PVector v2, float amt) {
+    return (PVector){
+        v1.x + amt * (v2.x - v1.x),
+        v1.y + amt * (v2.y - v1.y),
+        v1.z + amt * (v2.z - v1.z)
+    };
+}
+
+static inline PVector pvector_random2D(void) {
+    float angle = ((float)rand() / (float)RAND_MAX) * 2.0f * PI;
+    return (PVector){ cosf(angle), sinf(angle), 0.0f };
+}
+
+
+
 
 static inline void destroyProcessing(void) {
     if (pixels) MemFree(pixels);

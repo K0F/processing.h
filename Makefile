@@ -1,3 +1,4 @@
 main:
-	#gcc main.c -o sketch $(pkg-config --cflags --libs raylib) -O2 -lraylib -lGL -lm
-	gcc main.c -o sketch -O2 -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+	gcc pde2c.c -o pde2c
+	./pde2c sketch.pde > sketch.c
+	gcc sketch.c -o sketch -O2 -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
