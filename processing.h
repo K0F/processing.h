@@ -1,6 +1,8 @@
 #ifndef PROCESSING_H
 #define PROCESSING_H
 
+#define VERSION 0.1
+
 #include <stdio.h>
 #include "raylib.h"
 #include "rlgl.h"
@@ -43,7 +45,14 @@ int frameCount = 0;
 Color *pixels = NULL;
 static Texture2D _pixelsTexture;
 
+typedef uint32_t color;
+
 // macros ////////////////////////////////////////////////////////////////
+#define str(...) TextFormat(__VA_ARGS__)
+
+// 0. Color
+// Pack  RGBA into uint32_t (0xRRGGBBAA)
+#define color(r, g, b) (((uint32_t)(r) << 16) | ((uint32_t)(g) << 8) | (uint32_t)(b))
 
 // // 1. SIZE MACRO (přidán DUMMY na konec seznamu argumentů)
 #define SIZE_CHOOSER(_1, _2, _3, NAME, ...) NAME
@@ -68,6 +77,21 @@ static Texture2D _pixelsTexture;
 // 6. PVECTOR MACRO
 #define PV_CHOOSER(_1, _2, _3, NAME, ...) NAME
 #define pvector(...) PV_CHOOSER(__VA_ARGS__, pvector3D, pvector2D, DUMMY)(__VA_ARGS__)
+
+// 7. RANDOM
+#define RANDOM_CHOOSER(_1, _2, NAME, ...) NAME
+#define random(...) RANDOM_CHOOSER(__VA_ARGS__, random2, random1)(__VA_ARGS__)
+
+
+// random ///////////////////////////////////////////////////////////////////////////////////////////////
+
+static inline float random1(float max) {
+    return ((float)rand() / (float)RAND_MAX) * max;
+}
+
+static inline float random2(float min, float max) {
+    return min + ((float)rand() / (float)RAND_MAX) * (max - min);
+}
 
 // PFont ////////////////////////////////////////////////////////////////
 
@@ -127,7 +151,7 @@ static inline void size3(int w, int h, const char *title) {
 }
 
 static inline void size2(int w, int h) {
-  size3(w, h, "Processing Ray 0.1");
+  size3(w, h, str("Processing Ray %d", VERSION) );
 }
 
 
@@ -502,6 +526,7 @@ static inline PVector pvector_random2D(void) {
   float angle = ((float)rand() / (float)RAND_MAX) * 2.0f * PI;
   return (PVector){ cosf(angle), sinf(angle), 0.0f };
 }
+
 
 
 // defer //////////////////////////////////////////////////////////////////
