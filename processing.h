@@ -72,6 +72,10 @@ static inline void endDraw(void) {
     frameCount++;
 }
 
+
+
+// background ////////////////////////////////////////////
+/*
 static inline void background(int gray) {
     ClearBackground((Color){ gray, gray, gray, 255 });
 }
@@ -79,6 +83,29 @@ static inline void background(int gray) {
 static inline void backgroundRGB(int r, int g, int b) {
     ClearBackground((Color){ r, g, b, 255 });
 }
+*/
+
+static inline void background4(float r, float g, float b, float a) {
+    ClearBackground((Color){ (unsigned char)r, (unsigned char)g, (unsigned char)b, (unsigned char)a });
+}
+
+static inline void background3(float r, float g, float b) {
+    background4(r, g, b, 255.0f);
+}
+
+static inline void background2(float gray, float alpha) {
+    background4(gray, gray, gray, alpha);
+}
+
+static inline void background1(float gray) {
+    background4(gray, gray, gray, 255.0f);
+}
+
+#define BACKGROUND_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
+#define background(...) BACKGROUND_CHOOSER(__VA_ARGS__, background4, background3, background2, background1)(__VA_ARGS__)
+
+
+// PFont ////////////////////////////////////////////////////////////////
 
 static inline PFont loadFont(const char *filename, int fontSize) {
     PFont font = LoadFontEx(filename, fontSize, NULL, 0);
@@ -99,6 +126,8 @@ static inline void text(const char *str, float x, float y) {
         DrawTextEx(_currentFont, str, (Vector2){ (int)x, (int)y }, (float)((int)_textSizeState), _textSpacing, _fillColor);
     }
 }
+
+// save ////////////////////////////////////////////////////////////////////
 
 static inline void save(const char *filename) {
     TakeScreenshot(filename);
@@ -123,6 +152,8 @@ static inline void saveFrame(const char *filename) {
     buffer[b_idx] = '\0';
     TakeScreenshot(buffer);
 }
+
+// nf /////////////////////////////////////////////////////////////
 
 static inline const char* nfInt(int value, int digits) {
     char *buf = _nfBuffers[_nfBufferIndex];
@@ -155,6 +186,8 @@ static inline const char* nfFloat(float value, int left, int right) {
     return buf;
 }
 
+// pixels ////////////////////////////////////////////
+
 static inline void loadPixels(void) {
     Image img = LoadImageFromScreen();
     Color *colors = LoadImageColors(img);
@@ -185,9 +218,12 @@ static inline void endGraphics(void) {
     EndTextureMode();
 }
 
+
 static inline void image(PGraphics pg, float x, float y) {
     DrawTextureRec(pg.texture, (Rectangle){ 0, 0, (float)pg.texture.width, (float)-pg.texture.height }, (Vector2){ x, y }, WHITE);
 }
+
+// transformations (basic) /////////////////////////////////////////////////////
 
 static inline void pushMatrix(void) { rlPushMatrix(); }
 static inline void popMatrix(void) { rlPopMatrix(); }
@@ -221,6 +257,7 @@ static inline void noFill(void) { _useFill = false; }
 // stroke /////////////////////////////////
 
 static inline void stroke4(float r, float g, float b, float a) {
+    stroke4(r, g, b, a);
 }
 
 static inline void stroke3(float r, float g, float b) {
@@ -241,7 +278,6 @@ static inline void stroke1(float gray) {
 
 static inline void noStroke(void) { _useStroke = false; }
 
-
 static inline void strokeWeight(float weight) {
     _strokeW = weight;
 }
@@ -259,14 +295,14 @@ static inline void line6(float x1, float y1, float z1, float x2, float y2, float
     }
 }
 
-// 4 argumenty: line(x1, y1, x2, y2) -> 2D verze, která tiše doplní Z souřadnice jako 0.0f
 static inline void line4(float x1, float y1, float x2, float y2) {
     line6(x1, y1, 0.0f, x2, y2, 0.0f);
 }
 
-// Makro-výběrčí: Podle počtu argumentů skočí buď do line6 (3D) nebo line4 (2D)
 #define LINE_CHOOSER(_1, _2, _3, _4, _5, _6, NAME, ...) NAME
 #define line(...) LINE_CHOOSER(__VA_ARGS__, line6, dummy_error, line4)(__VA_ARGS__)
+
+// shapes //////////////////////////////////////////////////////////////////////////////
 
 static inline void rect(float x, float y, float w, float h) {
     if (_useFill) {
@@ -312,7 +348,7 @@ static inline float map(float value, float start1, float stop1, float start2, fl
     return start2 + (stop2 - start2) * ((value - start1) / (stop1 - start1));
 }
 
-// Vector math /////////////////////
+// Vector math /////////////////////////////////////////////////////////////////////////////////
 
 typedef struct {
     float x;
@@ -320,11 +356,10 @@ typedef struct {
     float z;
 } PVector;
 
-
-
 static inline PVector pvector3D(float x, float y, float z) {
     return (PVector){ x, y, z };
 }
+
 #define pvector2D(x, y) pvector3D(x, y, 0.0f)
 
 #define PV_CHOOSER(_1, _2, _3, NAME, ...) NAME
@@ -414,7 +449,7 @@ static inline PVector pvector_random2D(void) {
 }
 
 
-
+// defer //////////////////////////////////////////////////////////////////
 
 static inline void destroyProcessing(void) {
     if (pixels) MemFree(pixels);

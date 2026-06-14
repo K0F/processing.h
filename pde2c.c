@@ -297,20 +297,20 @@ int main(int argc, char *argv[]) {
     i++;
   }
 
-    printf("\n\nint main(void) {\n");
-    printf("    setup();\n");
-    printf("    while (!WindowShouldClose()) {\n");
-    printf("        beginDraw();\n");
-    printf("        draw();\n");
-    printf("        endDraw();\n");
-    printf("    }\n");
-    printf("    destroyProcessing();\n");
-    printf("    CloseWindow();\n");
-    printf("    return 0;\n");
-    printf("}\n");
+  printf("\n\nint main(void) {\n");
+  printf("    setup();\n");
+  printf("    while (!WindowShouldClose()) {\n");
+  printf("        beginDraw();\n");
+  printf("        draw();\n");
+  printf("        endDraw();\n");
+  printf("    }\n");
+  printf("    destroyProcessing();\n");
+  printf("    CloseWindow();\n");
+  printf("    return 0;\n");
+  printf("}\n");
 
-    free(tokens);
-    free(source_buffer);
-    return 0;
+  free(tokens);
+  free(source_buffer);
+  return 0;
 
 }
