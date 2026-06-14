@@ -25,13 +25,16 @@ typedef Font PFont;
 typedef RenderTexture2D PGraphics;
 
 static PFont _currentFont;
-static float _textSizeState = 12.0f;
+static float _textSizeState = 14.0f;
 static float _textSpacing = 1.0f;
 static Color _fillColor = { 255, 255, 255, 255 };
 static Color _strokeColor = { 0, 0, 0, 255 };
 static bool _useFill = true;
 static bool _useStroke = true;
 static float _strokeW = 1.0f;
+
+static Font main_font;
+static float current_text_size = 14.0f; 
 
 static char _nfBuffers[4][64];
 static int _nfBufferIndex = 0;
@@ -66,17 +69,53 @@ static Texture2D _pixelsTexture;
 #define PV_CHOOSER(_1, _2, _3, NAME, ...) NAME
 #define pvector(...) PV_CHOOSER(__VA_ARGS__, pvector3D, pvector2D, DUMMY)(__VA_ARGS__)
 
+// PFont ////////////////////////////////////////////////////////////////
+
+static inline PFont loadFont(const char *filename, int fontSize) {
+  PFont font = LoadFontEx(filename, fontSize, NULL, 0);
+  SetTextureFilter(font.texture, TEXTURE_FILTER_POINT);
+  return font;
+}
+
+static inline void textFont(PFont font) {
+  _currentFont = font;
+}
+
+static inline void textSize(float size) {
+    _textSizeState = size;
+}
+
+static inline void text(const char *str, float x, float y) {
+  if (_useFill) {
+    DrawTextEx(_currentFont, str, (Vector2){ (int)x, (int)y }, (float)((int)_textSizeState), _textSpacing, _fillColor);
+  }
+}
 ///////////////////////////////////////////////////////////////////////////////////////////
+
+static inline void load_default_font(void) {
+    main_font = LoadFontEx("terminus.ttf", current_text_size, NULL, 0);
+   
+    // I hate this
+    if (main_font.texture.id <= 0) {
+        main_font = LoadFontEx("/home/kof/src/RaylibProcessing/terminus.ttf", current_text_size, NULL, 0);
+    }
+    
+    if (main_font.texture.id <= 0) {
+        main_font = GetFontDefault();
+    }
+
+    _currentFont = main_font;
+    SetTextureFilter(main_font.texture, TEXTURE_FILTER_POINT);
+}
 
 // size /////////////////////////////////////////////////////////
 static inline void size3(int w, int h, const char *title) {
-  // smooth () ?
   // SetConfigFlags(FLAG_MSAA_4X_HINT);
-  // SetTextureFilter(_pixelsTexture, TEXTURE_FILTER_POINT);
 
   InitWindow(w, h, title);
+  load_default_font();
   SetTargetFPS(60);
-  _currentFont = GetFontDefault();
+
 
   width = w;
   height = h;
@@ -90,6 +129,7 @@ static inline void size3(int w, int h, const char *title) {
 static inline void size2(int w, int h) {
   size3(w, h, "Processing Ray 0.1");
 }
+
 
 // background ////////////////////////////////////////////
 static Color current_background_color = { 200, 200, 200, 255 };
@@ -132,29 +172,6 @@ static inline void beginDraw(void) {
 static inline void endDraw(void) {
   EndDrawing();
   frameCount++;
-}
-
-
-// PFont ////////////////////////////////////////////////////////////////
-
-static inline PFont loadFont(const char *filename, int fontSize) {
-  PFont font = LoadFontEx(filename, fontSize, NULL, 0);
-  SetTextureFilter(font.texture, TEXTURE_FILTER_POINT);
-  return font;
-}
-
-static inline void textFont(PFont font) {
-  _currentFont = font;
-}
-
-static inline void textSize(float size) {
-  _textSizeState = size;
-}
-
-static inline void text(const char *str, float x, float y) {
-  if (_useFill) {
-    DrawTextEx(_currentFont, str, (Vector2){ (int)x, (int)y }, (float)((int)_textSizeState), _textSpacing, _fillColor);
-  }
 }
 
 // save ////////////////////////////////////////////////////////////////////

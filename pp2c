@@ -12,22 +12,22 @@ else
 fi
 
 if [ -d "$TARGET" ]; then
-    SKETCH_DIR="$TARGET"
-    SKETCH_NAME=$(basename "$SKETCH_DIR")
-    MAIN_PDE="$SKETCH_DIR/$SKETCH_NAME.pde"
+  SKETCH_DIR="$TARGET"
+  SKETCH_NAME=$(basename "$SKETCH_DIR")
+  MAIN_PDE="$SKETCH_DIR/$SKETCH_NAME.pde"
 elif [ -f "$TARGET" ] && [ "${TARGET##*.}" = "pde" ]; then
-    MAIN_PDE="$TARGET"
-    SKETCH_DIR=$(dirname "$MAIN_PDE")
-    SKETCH_NAME=$(basename "$SKETCH_DIR")
+  MAIN_PDE="$TARGET"
+  SKETCH_DIR=$(dirname "$MAIN_PDE")
+  SKETCH_NAME=$(basename "$SKETCH_DIR")
 else
-    echo "Error: Invalid target, it has to be sketch folder of .pde file."
-    exit 1
+  echo "Error: Invalid target, it has to be sketch folder of .pde file."
+  exit 1
 fi
 
 if [ ! -f "$MAIN_PDE" ]; then
-    echo "Error: Main sketch file should be in the folder of the same name!"
-    echo "Expected: $SKETCH_DIR/$(basename "$SKETCH_DIR").pde"
-    exit 1
+  echo "Error: Main sketch file should be in the folder of the same name!"
+  echo "Expected: $SKETCH_DIR/$(basename "$SKETCH_DIR").pde"
+  exit 1
 fi
 
 BUILD_DIR=$(mktemp -d -t pde-build.XXXXXX)
@@ -44,11 +44,11 @@ cat "$MAIN_PDE" > "$COMBINED_PDE"
 echo "" >> "$COMBINED_PDE" # Prevence, pokud chybí newline na konci souboru
 
 for f in "$SKETCH_DIR"/*.pde; do
-    if [ -f "$f" ] && [ "$f" != "$MAIN_PDE" ]; then
-        echo "// --- Tab: $(basename "$f") ---" >> "$COMBINED_PDE"
-        cat "$f" >> "$COMBINED_PDE"
-        echo "" >> "$COMBINED_PDE"
-    fi
+  if [ -f "$f" ] && [ "$f" != "$MAIN_PDE" ]; then
+    echo "// --- Tab: $(basename "$f") ---" >> "$COMBINED_PDE"
+    cat "$f" >> "$COMBINED_PDE"
+    echo "" >> "$COMBINED_PDE"
+  fi
 done
 
 # HTML COLOR MASHING
@@ -57,10 +57,12 @@ sed -i -E 's/#([0-9a-fA-F]{6})/HEX_COLOR_\1/g' "$COMBINED_PDE"
 
 # Kopírování headeru do build adresáře
 cp "$PROCESSING_H_PATH" "$BUILD_DIR/processing.h"
+HEADER_ROOT=$(dirname "$PROCESSING_H_PATH")
+cp "$HEADER_ROOT/terminus.ttf" "$BUILD_DIR/terminus.ttf"
 
 if ! pde2c "$COMBINED_PDE" > "$OUTPUT_C"; then
-    echo "Error: Transpil failed!"
-    exit 1
+  echo "Error: Transpil failed!"
+  exit 1
 fi
 
 # HTML COLOR MASHING - Fáze 2: Překlopíme bezpečný název na čistý C hex literál pro GCC
