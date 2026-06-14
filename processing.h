@@ -1,7 +1,7 @@
 #ifndef PROCESSING_H
 #define PROCESSING_H
 
-#define VERSION 0.1
+#define _VERSION_ "0.1"
 
 #include <stdio.h>
 #include "raylib.h"
@@ -181,7 +181,7 @@ static inline void size3(int w, int h, const char *title) {
 }
 
 static inline void size2(int w, int h) {
-  size3(w, h, str("Processing Ray %d", VERSION) );
+  size3(w, h, str("Processing Ray %s", _VERSION_) );
 }
 
 
