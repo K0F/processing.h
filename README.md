@@ -111,8 +111,9 @@ mapped back to the original source lines via `#line` directives.
 
 Out of the ~20 real-world sketches in `~/src/2021` used as a test corpus, 9
 currently compile, link and run natively (`./wildtest ~/src/2021`). On the
-larger 2010 archive (151 sketches, `./corpus.sh ../2010`), 16 fully
-transpile and link; the dominant blockers there are external-library types
+larger 2010 archive (`./corpus.sh ../2010`), 16 of 151 sketches fully
+transpile and link (17/168 counting duplicate `applet/` copies via
+`./wildtest`); the dominant blockers there are external-library types
 (Minim, GL, OscP5, PeasyCam), user-defined classes (`ArrayList`, custom
 types) and non-constant global initializers.
 
@@ -123,5 +124,5 @@ external libraries (`import` lines are stripped, but the library calls
 themselves do not link: OscP5, video, MidiBus),
 try/catch, most `String` methods beyond `charAt`,
 `curveVertex/bezierVertex` inside arbitrary paths,
-`loadStrings/loadImage` file IO, drawing calls on PGraphics receivers
+`loadStrings` file IO, drawing calls on PGraphics receivers
 (`pg.stroke()` style — only `beginDraw/endDraw` are routed).
