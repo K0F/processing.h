@@ -98,6 +98,12 @@ mapped back to the original source lines via `#line` directives.
 - **Strings**: `"a: " + x + "!"` concatenation folded into `_pde_cat` calls
   (numbers formatted `%g`), `.charAt(i)` mapped to a helper returning a
   1-char string, `color()` arity-routed incl. single packed arg
+- **PImage**: disk loading (`loadImage`, normalized to RGBA8), `createImage`,
+  `image()` type-dispatched between canvases and images via `_Generic`,
+  `tint/noTint`, GPU texture caching, direct `pixels[]` access
+  (`img.pixels[i]` aliases the RGBA buffer), member ops rewritten by the
+  transpiler: `loadPixels/updatePixels/filter/mask/resize/save`,
+  `beginDraw/endDraw` on PGraphics
 - **3D (OPENGL sketches)**: `translate(x,y,z)`, renderer constants
   (`P2D/P3D/OPENGL` accepted by `size()`), `sphere()/sphereDetail()` drawn
   under a temporary perspective projection (fill faces + stroke wires),
@@ -105,7 +111,7 @@ mapped back to the original source lines via `#line` directives.
 
 Out of the ~20 real-world sketches in `~/src/2021` used as a test corpus, 9
 currently compile, link and run natively (`./wildtest ~/src/2021`). On the
-larger 2010 archive (151 sketches, `./corpus.sh ../2010`), 14 fully
+larger 2010 archive (151 sketches, `./corpus.sh ../2010`), 16 fully
 transpile and link; the dominant blockers there are external-library types
 (Minim, GL, OscP5, PeasyCam), user-defined classes (`ArrayList`, custom
 types) and non-constant global initializers.
@@ -117,4 +123,5 @@ external libraries (`import` lines are stripped, but the library calls
 themselves do not link: OscP5, video, MidiBus),
 try/catch, most `String` methods beyond `charAt`,
 `curveVertex/bezierVertex` inside arbitrary paths,
-`loadStrings/loadImage` file IO.
+`loadStrings/loadImage` file IO, drawing calls on PGraphics receivers
+(`pg.stroke()` style — only `beginDraw/endDraw` are routed).

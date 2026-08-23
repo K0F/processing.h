@@ -909,8 +909,211 @@ static inline void endGraphics(void) {
   EndTextureMode();
 }
 
-static inline void image(PGraphics pg, float x, float y) {
-  DrawTextureRec(pg.texture, (Rectangle){ 0, 0, (float)pg.texture.width, (float)-pg.texture.height }, (Vector2){ x, y }, WHITE);
+// image() dispatch: PGraphics canvas vs disk-loaded PImage ////////////
+
+// single 5-param form each; w/h <= 0 means "draw at natural size".
+// pde2c rewrites 3-arg sketch calls to pass 0, 0 for the size.
+static inline void image_pg(PGraphics pg, float x, float y, float w, float h) {
+  if (w <= 0.0f || h <= 0.0f) {
+    // canvas textures render bottom-up -> flip
+    DrawTextureRec(pg.texture, (Rectangle){ 0, 0, (float)pg.texture.width, (float)-pg.texture.height }, (Vector2){ x, y }, WHITE);
+  } else {
+    DrawTexturePro(pg.texture,
+                   (Rectangle){ 0, 0, (float)pg.texture.width, (float)-pg.texture.height },
+                   (Rectangle){ x, y, w, h }, (Vector2){ 0, 0 }, 0.0f, WHITE);
+  }
+}
+
+// PImage — thin alias over raylib Image; width/height come free.
+typedef Image PImage;
+
+// tint affects image draws only (Processing model)
+static Color _tintColor = { 255, 255, 255, 255 };
+static bool _tintEnabled = false;
+
+static inline void tint4(float r, float g, float b, float a) {
+  _tintColor = (Color){ (unsigned char)r, (unsigned char)g, (unsigned char)b, (unsigned char)a };
+  _tintEnabled = true;
+}
+static inline void tint3(float r, float g, float b) { tint4(r, g, b, 255.0f); }
+static inline void tint2(float grayOrColor, float alpha) {
+  if (grayOrColor > 255.0f) {
+    uint32_t c = (uint32_t)grayOrColor;
+    tint4((float)(c & 0xFF), (float)((c >> 8) & 0xFF), (float)((c >> 16) & 0xFF), alpha);
+  } else {
+    tint4(grayOrColor, grayOrColor, grayOrColor, alpha);
+  }
+}
+static inline void tint1(uint32_t c) {
+  if (c <= 255) tint4((float)c, (float)c, (float)c, 255);
+  else tint4((float)(c & 0xFF), (float)((c >> 8) & 0xFF), (float)((c >> 16) & 0xFF), 255.0f);
+}
+#define TINT_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
+#define tint(...) TINT_CHOOSER(__VA_ARGS__, tint4, tint3, tint2, tint1)(__VA_ARGS__)
+static inline void noTint(void) { _tintEnabled = false; }
+
+// small GPU texture cache so per-frame image() redraws don't re-upload
+// the whole CPU buffer; keyed by img.data pointer, dropped on mutation
+typedef struct { void *key; Texture2D tex; } _PImageTexEntry;
+static _PImageTexEntry _pimageTexCache[16];
+static int _pimageTexCacheN = 0;
+
+static Texture2D _pimage_texture(const PImage *img) {
+  for (int i = 0; i < _pimageTexCacheN; i++)
+    if (_pimageTexCache[i].key == img->data) return _pimageTexCache[i].tex;
+  Texture2D t = LoadTextureFromImage(*img);
+  if (_pimageTexCacheN < 16) {
+    _pimageTexCache[_pimageTexCacheN++] = (_PImageTexEntry){ img->data, t };
+  }
+  return t;
+}
+
+static void _pimage_invalidate(const void *dataKey) {
+  for (int i = 0; i < _pimageTexCacheN; i++) {
+    if (_pimageTexCache[i].key == dataKey) {
+      UnloadTexture(_pimageTexCache[i].tex);
+      _pimageTexCache[i] = _pimageTexCache[--_pimageTexCacheN];
+      return;
+    }
+  }
+}
+
+// Processing filter constants, prefixed: raylib's color macros (#define GRAY
+// ...) would collide with the bare Processing names; pde2c maps them over
+enum { _PIMAGE_BLUR = 101, _PIMAGE_GRAY = 102, _PIMAGE_INVERT = 103,
+       _PIMAGE_THRESHOLD = 104, _PIMAGE_POSTERIZE = 105, _PIMAGE_OPAQUE = 106 };
+
+static inline PImage loadImage(const char *path) {
+  PImage img = LoadImage(path);
+  if (img.data == NULL) {
+    fprintf(stderr, "processing.h: loadImage(\"%s\") failed, using 1x1 blank\n", path);
+    img = GenImageColor(1, 1, BLANK);
+    return img;
+  }
+  ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8); // stable pixel layout
+  return img;
+}
+
+static inline PImage createImage(int w, int h, int format) {
+  (void)format; // RGB/ARGB/etc. all normalize to RGBA8
+  return GenImageColor(w, h, BLANK);
+}
+
+static inline PImage pimage_new(int w, int h) { return GenImageColor(w, h, BLANK); }
+
+static inline void image_pim(PImage img, float x, float y, float w, float h) {
+  if (w <= 0.0f || h <= 0.0f) { w = img.width; h = img.height; }
+  // CPU-loaded images are top-down like Processing's coordinate system
+  DrawTexturePro(_pimage_texture(&img),
+                 (Rectangle){ 0, 0, (float)img.width, (float)img.height },
+                 (Rectangle){ x, y, w, h }, (Vector2){ 0, 0 }, 0.0f,
+                 _tintEnabled ? _tintColor : WHITE);
+}
+
+#define image(first, ...) \
+  _Generic((first), Image: image_pim, RenderTexture2D: image_pg)(first, __VA_ARGS__)
+
+// ---- PImage member operations (rewritten by pde2c from img.op(...) form)
+
+// pixels[] aliases the RGBA8 buffer directly: uint32 little-endian view of
+// R8G8B8A8 bytes equals the pack_color ABGR layout used everywhere else
+static inline uint32_t *pimage_loadPixels(PImage *img) {
+  return (uint32_t *)img->data;
+}
+static inline uint32_t *pimage_pixels(PImage *img) {
+  return (uint32_t *)img->data;
+}
+static inline void pimage_updatePixels(PImage *img) {
+  _pimage_invalidate(img->data); // redraw re-uploads mutated pixels
+}
+
+static inline void pimage_resize(PImage *img, int w, int h) {
+  _pimage_invalidate(img->data);
+  ImageResize(img, w, h);
+  ImageFormat(img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+}
+
+static void pimage_filter(PImage *img, int kind, float arg) {
+  if (img->format != PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 || img->data == NULL) return;
+  _pimage_invalidate(img->data);
+  int n = img->width * img->height;
+  uint8_t *px = (uint8_t *)img->data;
+  switch (kind) {
+    case _PIMAGE_GRAY:
+      for (int i = 0; i < n; i++) {
+        uint8_t g = (uint8_t)((px[i*4] * 77 + px[i*4+1] * 151 + px[i*4+2] * 28) >> 8);
+        px[i*4] = px[i*4+1] = px[i*4+2] = g;
+      }
+      break;
+    case _PIMAGE_INVERT:
+      for (int i = 0; i < n * 4; i += 4) {
+        px[i] = 255 - px[i]; px[i+1] = 255 - px[i+1]; px[i+2] = 255 - px[i+2];
+      }
+      break;
+    case _PIMAGE_THRESHOLD: {
+      float t = (arg <= 0.0f || arg > 1.0f) ? 0.5f : arg;
+      for (int i = 0; i < n; i++) {
+        uint8_t g = (uint8_t)((px[i*4] * 77 + px[i*4+1] * 151 + px[i*4+2] * 28) >> 8);
+        uint8_t v = (g >= (uint8_t)(t * 255.0f)) ? 255 : 0;
+        px[i*4] = px[i*4+1] = px[i*4+2] = v;
+      }
+      break;
+    }
+    case _PIMAGE_POSTERIZE: {
+      int levels = (arg < 2.0f) ? 2 : (arg > 255.0f ? 255 : (int)arg);
+      for (int i = 0; i < n * 4; i += 4)
+        for (int c = 0; c < 3; c++)
+          px[i+c] = (uint8_t)((px[i+c] >> levels << levels) | (1 << (levels - 1)));
+      break;
+    }
+    case _PIMAGE_OPAQUE:
+      for (int i = 0; i < n; i++) px[i*4+3] = 255;
+      break;
+    case _PIMAGE_BLUR: {
+      // box blur, radius from arg (default 1), three passes approximate gaussian
+      int r = (arg < 1.0f) ? 1 : (int)arg;
+      uint8_t *tmp = (uint8_t *)MemAlloc((size_t)n * 4);
+      for (int pass = 0; pass < 3; pass++) {
+        memcpy(tmp, px, (size_t)n * 4);
+        for (int y = 0; y < img->height; y++)
+          for (int x = 0; x < img->width; x++)
+            for (int c = 0; c < 4; c++) {
+              int sum = 0, cnt = 0;
+              for (int dy = -r; dy <= r; dy++)
+                for (int dx = -r; dx <= r; dx++) {
+                  int sx = x + dx, sy = y + dy;
+                  if (sx < 0 || sy < 0 || sx >= img->width || sy >= img->height) continue;
+                  sum += tmp[(sy * img->width + sx) * 4 + c];
+                  cnt++;
+                }
+              px[(y * img->width + x) * 4 + c] = (uint8_t)(sum / cnt);
+            }
+      }
+      MemFree(tmp);
+      break;
+    }
+    default:
+      fprintf(stderr, "processing.h: pimage_filter(%d) not implemented\n", kind);
+      break;
+  }
+}
+
+static inline void pimage_mask(PImage *img, PImage *src) {
+  if (img->width != src->width || img->height != src->height ||
+      img->format != PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 ||
+      src->format != PIXELFORMAT_UNCOMPRESSED_R8G8B8A8) {
+    fprintf(stderr, "processing.h: mask() needs same-size images\n");
+    return;
+  }
+  uint8_t *d = (uint8_t *)img->data, *s = (uint8_t *)src->data;
+  int n = img->width * img->height;
+  for (int i = 0; i < n; i++)
+    d[i*4+3] = (uint8_t)((d[i*4+3] * s[i*4]) >> 8); // red channel drives alpha
+  _pimage_invalidate(img->data);
+}
+
+static inline void pimage_save(PImage *img, const char *path) {
+  ExportImage(*img, path);
 }
 
 // transformations (basic) /////////////////////////////////////////////////////
