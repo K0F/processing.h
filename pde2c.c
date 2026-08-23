@@ -281,8 +281,8 @@ int tokenize(const char *source, Token *tokens) {
         unsigned int g = (rgb >> 8) & 0xFF;
         unsigned int b = rgb & 0xFF;
         tokens[t_count].type = TOKEN_NUMBER;
-        snprintf(tokens[t_count].text, MAX_TOKEN_TEXT, "0x%02X%02X%02XFF",
-                 (unsigned)((255u << 24) | (b << 16) | (g << 8) | r));
+        // opaque ABGR (raylib-native layout, matches pack_color / red()/green()/blue())
+        snprintf(tokens[t_count].text, MAX_TOKEN_TEXT, "0xFF%02X%02X%02X", b, g, r);
         tokens[t_count].line = current_line;
       tokens[t_count].fileId = current_file;
         t_count++;
@@ -904,6 +904,20 @@ int main(int argc, char *argv[]) {
         i += 4;
         continue;
       }
+    }
+
+    // 8b. Java array .length -> C sizeof expression
+    //     (true arrays only: brace-initialized decls emit "TYPE name[]";
+    //      arrays decayed to pointer params give a wrong count — known limit)
+    if (current.type == TOKEN_IDENTIFIER &&
+        (i + 2 < num_tokens) &&
+        tokens[i+1].type == TOKEN_DOT &&
+        tokens[i+2].type == TOKEN_IDENTIFIER &&
+        strcmp(tokens[i+2].text, "length") == 0)
+    {
+      printf("(sizeof(%s) / sizeof(*%s))", current.text, current.text);
+      i += 3;
+      continue;
     }
 
     // 9. Standardize environment entry point formatting

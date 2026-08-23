@@ -180,6 +180,15 @@ static RenderTexture2D _canvas;
 #define MAG_CHOOSER(_1, _2, _3, NAME, ...) NAME
 #define mag(...) MAG_CHOOSER(__VA_ARGS__, mag3, mag, DUMMY)(__VA_ARGS__)
 
+// LOADFONT: loadFont(file) uses a default size; glyph size comes from
+// _textSizeState at draw time (DrawTextEx scales), so the base size is free
+#define LOADFONT_CHOOSER(_1, _2, NAME, ...) NAME
+#define loadFont(...) LOADFONT_CHOOSER(__VA_ARGS__, loadFont2, loadFont1)(__VA_ARGS__)
+
+// TEXTFONT: textFont(font) / textFont(font, size)
+#define TEXTFONT_CHOOSER(_1, _2, NAME, ...) NAME
+#define textFont(...) TEXTFONT_CHOOSER(__VA_ARGS__, textFont2, textFont1)(__VA_ARGS__)
+
 
 // random ///////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -304,19 +313,26 @@ static inline void noiseDetail2(int lod, float falloff) {
 
 // PFont ////////////////////////////////////////////////////////////////
 
-static inline PFont loadFont(const char *filename, int fontSize) {
+static inline PFont loadFont2(const char *filename, int fontSize) {
   PFont font = LoadFontEx(filename, fontSize, NULL, 0);
   SetTextureFilter(font.texture, TEXTURE_FILTER_POINT);
   return font;
 }
 
-static inline PFont createFont(const char *filename, int fontSize) {  return loadFont(filename, fontSize);
+// Processing's loadFont(file): vlw carries its own size; any sane base works
+// here since text() renders at _textSizeState via DrawTextEx scaling
+#define LOADFONT_DEFAULT_SIZE 12
+static inline PFont loadFont1(const char *filename) {
+  return loadFont2(filename, LOADFONT_DEFAULT_SIZE);
+}
+
+static inline PFont createFont(const char *filename, int fontSize) {  return loadFont2(filename, fontSize);
 }
 
 // Processing's createFont(name, size, smooth) — smooth flag ignored
 static inline PFont createFont3(const char *filename, int fontSize, int smooth) {
   (void)smooth;
-  return loadFont(filename, fontSize);
+  return loadFont2(filename, fontSize);
 }
 
 // colorMode: only RGB is modeled; calls are accepted and ignored
@@ -347,8 +363,14 @@ static inline void pixelDensity1(int d) { (void)d; }
 static inline int displayDensity(void) { return 1; }
 static inline void displayDensity1(int d) { (void)d; }
 
-static inline void textFont(PFont font) {
+static inline void textFont1(PFont font) {
   _currentFont = font;
+}
+
+// Processing's textFont(font, size): selects the font and sets the draw size
+static inline void textFont2(PFont font, float size) {
+  _currentFont = font;
+  _textSizeState = size;
 }
 
 static inline void textSize(float size) {
@@ -483,17 +505,22 @@ static inline void background3(float r, float g, float b) {
   background4(r, g, b, 255.0f);
 }
 
-static inline void background2(float gray, float alpha) {
-  background4(gray, gray, gray, alpha);
+static inline void background2(float grayOrColor, float alpha) {
+  if (grayOrColor > 255.0f) { // packed ABGR + alpha (Processing: background(rgb, a))
+    uint32_t c = (uint32_t)grayOrColor;
+    background4((float)(c & 0xFF), (float)((c >> 8) & 0xFF), (float)((c >> 16) & 0xFF), alpha);
+  } else {
+    background4(grayOrColor, grayOrColor, grayOrColor, alpha);
+  }
 }
 
 static inline void background1(uint32_t c) {
   if (c <= 255) {
     background4(c, c, c, 255);
   } else {
-    uint8_t r = (c >> 16) & 0xFF;
+    uint8_t r = c         & 0xFF;
     uint8_t g = (c >> 8)  & 0xFF;
-    uint8_t b = c         & 0xFF;
+    uint8_t b = (c >> 16) & 0xFF;
     background4(r, g, b, 255);
   }
 }
@@ -671,8 +698,19 @@ static inline void endDraw(void) {
 
 // save ////////////////////////////////////////////////////////////////////
 
+// capture the sketch canvas, not the window backbuffer: TakeScreenshot() is
+// immediate in raylib 6 and would glReadPixels while draw calls still sit in
+// the un-flushed rlgl batch (yielding a background-only image)
+static inline void _exportCanvas(const char *filename) {
+  rlDrawRenderBatchActive();               // push queued draws into _canvas
+  Image img = LoadImageFromTexture(_canvas.texture);
+  ImageFlipVertical(&img);                 // RT textures are y-flipped
+  ExportImage(img, filename);
+  UnloadImage(img);
+}
+
 static inline void save(const char *filename) {
-  TakeScreenshot(filename);
+  _exportCanvas(filename);
 }
 
 static inline void saveFrame(const char *filename) {
@@ -692,7 +730,7 @@ static inline void saveFrame(const char *filename) {
     }
   }
   buffer[b_idx] = '\0';
-  TakeScreenshot(buffer);
+  _exportCanvas(buffer);
 }
 
 // nf /////////////////////////////////////////////////////////////
@@ -788,17 +826,22 @@ static inline void fill3(float r, float g, float b) {
   fill4(r, g, b, 255.0f);
 }
 
-static inline void fill2(float gray, float alpha) {
-  fill4(gray, gray, gray, alpha);
+static inline void fill2(float grayOrColor, float alpha) {
+  if (grayOrColor > 255.0f) { // packed ABGR + alpha (Processing: fill(rgb, a))
+    uint32_t c = (uint32_t)grayOrColor;
+    fill4((float)(c & 0xFF), (float)((c >> 8) & 0xFF), (float)((c >> 16) & 0xFF), alpha);
+  } else {
+    fill4(grayOrColor, grayOrColor, grayOrColor, alpha);
+  }
 }
 
 static inline void fill1(uint32_t c) {
   if (c <= 255) {
     fill4(c, c, c, 255);
   } else {
-    uint8_t r = (c >> 16) & 0xFF;
+    uint8_t r = c         & 0xFF;
     uint8_t g = (c >> 8)  & 0xFF;
-    uint8_t b = c         & 0xFF;
+    uint8_t b = (c >> 16) & 0xFF;
     fill4(r, g, b, 255);
   }
 }
@@ -816,17 +859,22 @@ static inline void stroke3(float r, float g, float b) {
   stroke4(r, g, b, 255.0f);
 }
 
-static inline void stroke2(float gray, float alpha) {
-  stroke4(gray, gray, gray, alpha);
+static inline void stroke2(float grayOrColor, float alpha) {
+  if (grayOrColor > 255.0f) { // packed ABGR + alpha (Processing: stroke(rgb, a))
+    uint32_t c = (uint32_t)grayOrColor;
+    stroke4((float)(c & 0xFF), (float)((c >> 8) & 0xFF), (float)((c >> 16) & 0xFF), alpha);
+  } else {
+    stroke4(grayOrColor, grayOrColor, grayOrColor, alpha);
+  }
 }
 
 static inline void stroke1(uint32_t c) {
   if (c <= 255) {
     stroke4(c, c, c, 255);
   } else {
-    uint8_t r = (c >> 16) & 0xFF;
+    uint8_t r = c         & 0xFF;
     uint8_t g = (c >> 8)  & 0xFF;
-    uint8_t b = c         & 0xFF;
+    uint8_t b = (c >> 16) & 0xFF;
     stroke4(r, g, b, 255);
   }
 }
