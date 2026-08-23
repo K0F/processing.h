@@ -968,6 +968,38 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
+    // image(): type-dispatched at runtime via _Generic (PGraphics vs PImage);
+    // normalize the 3-arg form to 5 params, 0 0 meaning natural size
+    if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "image") == 0 &&
+        !(i > 0 && tokens[i-1].type == TOKEN_DOT) &&
+        (i + 1 < num_tokens) &&
+        tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "(") == 0)
+    {
+      int close;
+      int nargs = count_call_args(tokens, num_tokens, i + 1, &close);
+      printf("image(");
+      i += 2;
+      int depth = 1;
+      while (i < num_tokens && depth > 0) {
+        Token t = tokens[i];
+        if (t.type == TOKEN_SYMBOL && strcmp(t.text, "(") == 0) depth++;
+        if (t.type == TOKEN_SYMBOL && strcmp(t.text, ")") == 0) {
+          depth--;
+          if (depth == 0) {
+            if (nargs == 3) printf(", 0, 0");
+            printf(")");
+            i++;
+            break;
+          }
+        }
+        printf("%s", t.text);
+        if (t.type != TOKEN_DOT && t.type != TOKEN_OPERATOR &&
+            !(t.type == TOKEN_SYMBOL && strchr("([{,", t.text[0]))) printf(" ");
+        i++;
+      }
+      continue;
+    }
+
     // 1. Array declarations "TYPE[] name":
     //    - "= {" literal init stays C-style:  TYPE name[] = {
     //    - otherwise pointer style (heap ref): TYPE *name
@@ -1058,6 +1090,7 @@ int main(int argc, char *argv[]) {
 
     // 3. Size function translation (drops the renderer arg: size(w,h,OPENGL))
     if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "size") == 0 &&
+        !(i > 0 && tokens[i-1].type == TOKEN_DOT) &&
         (i + 1 < num_tokens) && tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "(") == 0)
     {
       printf("size_converted(");
@@ -1098,6 +1131,40 @@ int main(int argc, char *argv[]) {
         printf("current_frame_rate");
         i++;
       }
+      continue;
+    }
+
+    // 3b2. createGraphics(w, h, renderer) drops the renderer arg
+    if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "createGraphics") == 0 &&
+        !(i > 0 && tokens[i-1].type == TOKEN_DOT) &&
+        (i + 1 < num_tokens) && tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "(") == 0)
+    {
+      int close;
+      int nargs = count_call_args(tokens, num_tokens, i + 1, &close);
+      printf("createGraphics(");
+      i += 2;
+      int depth = 1, commas = 0;
+      while (i < num_tokens && depth > 0) {
+        Token t = tokens[i];
+        if (t.type == TOKEN_SYMBOL && strcmp(t.text, "(") == 0) depth++;
+        if (t.type == TOKEN_SYMBOL && strcmp(t.text, ")") == 0) {
+          depth--;
+          if (depth == 0) { printf(")"); i++; break; }
+        }
+        if (depth == 1 && t.type == TOKEN_SYMBOL && strcmp(t.text, ",") == 0) {
+          commas++;
+          if (commas < 2) printf(", ");
+          i++;
+          continue;
+        }
+        if (commas < 2) {
+          printf("%s", t.text);
+          if (t.type != TOKEN_DOT && t.type != TOKEN_OPERATOR &&
+              !(i + 1 < num_tokens && tokens[i+1].type == TOKEN_SYMBOL)) printf(" ");
+        }
+        i++;
+      }
+      (void)nargs;
       continue;
     }
 
@@ -1152,6 +1219,17 @@ int main(int argc, char *argv[]) {
         tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "(") == 0)
     {
       printf("pvector");
+      i += 2;
+      continue;
+    }
+
+    // 5a. Transform "new PImage(w, h)" -> "pimage_new(w, h)"
+    if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "new") == 0 &&
+        (i + 2 < num_tokens) &&
+        tokens[i+1].type == TOKEN_IDENTIFIER && strcmp(tokens[i+1].text, "PImage") == 0 &&
+        tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "(") == 0)
+    {
+      printf("pimage_new");
       i += 2;
       continue;
     }
@@ -1273,9 +1351,100 @@ int main(int argc, char *argv[]) {
         tokens[i+2].type == TOKEN_IDENTIFIER &&
         strcmp(tokens[i+2].text, "length") == 0)
     {
-      printf("(int)(sizeof(%s) / sizeof(*%s))", current.text, current.text);
+      printf("(sizeof(%s) / sizeof(*%s))", current.text, current.text);
       i += 3;
       continue;
+    }
+
+    // 8c. PImage member operations: img.op(...) / img.pixels rewritten to
+    //     pimage_* helpers taking &receiver; dot-keyed so bare canvas calls
+    //     (loadPixels(), updatePixels()) are untouched
+    if (current.type == TOKEN_IDENTIFIER &&
+        (i + 2 < num_tokens) &&
+        tokens[i+1].type == TOKEN_DOT &&
+        tokens[i+2].type == TOKEN_IDENTIFIER)
+    {
+      const char *op = tokens[i+2].text;
+      const char *helper = NULL; bool takesArgs = false, mapsFilterConsts = false;
+      bool byVal = false; // PGraphics ops take the canvas by value
+      if (strcmp(op, "loadPixels") == 0) helper = "pimage_loadPixels";
+      else if (strcmp(op, "updatePixels") == 0) helper = "pimage_updatePixels";
+      else if (strcmp(op, "pixels") == 0) helper = "pimage_pixels";
+      else if (strcmp(op, "resize") == 0) { helper = "pimage_resize"; takesArgs = true; }
+      else if (strcmp(op, "filter") == 0) { helper = "pimage_filter"; takesArgs = true; mapsFilterConsts = true; }
+      else if (strcmp(op, "mask") == 0) { helper = "pimage_mask"; takesArgs = true; }
+      else if (strcmp(op, "save") == 0) { helper = "pimage_save"; takesArgs = true; }
+      else if (strcmp(op, "beginDraw") == 0) { helper = "beginGraphics"; byVal = true; }
+      else if (strcmp(op, "endDraw") == 0) {
+        // endGraphics(void) pops whatever canvas is active
+        int j = i + 3;
+        if (j + 1 < num_tokens && tokens[j].type == TOKEN_SYMBOL &&
+            strcmp(tokens[j].text, "(") == 0 &&
+            tokens[j+1].type == TOKEN_SYMBOL && strcmp(tokens[j+1].text, ")") == 0) j += 2;
+        printf("endGraphics()");
+        i = j;
+        continue;
+      }
+      if (helper != NULL) {
+        int j = i + 3;
+        bool refArg = false;
+        if (takesArgs) {
+          if (!(j < num_tokens && tokens[j].type == TOKEN_SYMBOL &&
+                strcmp(tokens[j].text, "(") == 0)) goto not_pimage_op;
+          j++;
+        }
+        if (byVal) printf("%s(%s", helper, current.text);
+        else       printf("%s(&(%s)", helper, current.text);
+        if (takesArgs) {
+          // mask(src) passes the source by address when it's a plain variable
+          refArg = strcmp(op, "mask") == 0 &&
+                   tokens[j].type == TOKEN_IDENTIFIER &&
+                   (tokens[j+1].type == TOKEN_SYMBOL &&
+                    (strcmp(tokens[j+1].text, ",") == 0 || strcmp(tokens[j+1].text, ")") == 0));
+          if (refArg) printf(", &(");
+          else printf(", ");
+          bool sawComma = false;
+          int depth = 1;
+          while (j < num_tokens && depth > 0) {
+            Token t = tokens[j];
+            if (t.type == TOKEN_SYMBOL && strcmp(t.text, "(") == 0) depth++;
+            if (t.type == TOKEN_SYMBOL && strcmp(t.text, ")") == 0) {
+              depth--;
+              if (depth == 0) {
+                if (refArg) printf(")");
+                if (mapsFilterConsts && !sawComma) printf(", 0"); // filter(GRAY) default arg
+                printf(")");
+                j++;
+                break;
+              }
+            }
+            if (t.type == TOKEN_SYMBOL && strcmp(t.text, ",") == 0 && depth == 1) sawComma = true;
+            if (mapsFilterConsts && t.type == TOKEN_IDENTIFIER) {
+              const char *names[] = { "BLUR", "GRAY", "INVERT", "THRESHOLD", "POSTERIZE", "OPAQUE" };
+              const char *mapped[] = { "_PIMAGE_BLUR", "_PIMAGE_GRAY", "_PIMAGE_INVERT",
+                                       "_PIMAGE_THRESHOLD", "_PIMAGE_POSTERIZE", "_PIMAGE_OPAQUE" };
+              bool hit = false;
+              for (int k = 0; k < 6; k++)
+                if (strcmp(t.text, names[k]) == 0) { printf("%s", mapped[k]); hit = true; break; }
+              if (!hit) printf("%s", t.text);
+            } else {
+              printf("%s", t.text);
+            }
+            if (t.type != TOKEN_DOT && t.type != TOKEN_OPERATOR &&
+                !(t.type == TOKEN_SYMBOL && strchr("([{,", t.text[0]))) printf(" ");
+            j++;
+          }
+        } else {
+          // pixels/loadPixels/updatePixels may carry an empty call "()"
+          if (j + 1 < num_tokens && tokens[j].type == TOKEN_SYMBOL &&
+              strcmp(tokens[j].text, "(") == 0 &&
+              tokens[j+1].type == TOKEN_SYMBOL && strcmp(tokens[j+1].text, ")") == 0) j += 2;
+          printf(")"); // close the helper call (receiver's ")" already emitted)
+        }
+        i = j;
+        continue;
+      }
+      not_pimage_op:;
     }
 
     // 8d. expand(arr, n) keeps contents, zero-fills the tail like Java
