@@ -6,11 +6,13 @@
 #include <stdio.h>
 #include "raylib.h"
 #include "rlgl.h"
+#include "raymath.h"
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <string.h>
 #include <math.h>
 #include <sys/time.h>
 // NOTE: <time.h> intentionally not included: sketches often declare a global
@@ -36,6 +38,13 @@
 // Processing constants (mirror PValues from PConstants)
 #define CODED 65535
 #define UNDEFINED (-1)
+// renderer names accepted by size(): raylib always renders accelerated 2D,
+// so these only keep sketches that pass them to size() compiling
+#define P2D 1
+#define JAVA2D 1
+#define P3D 2
+#define OPENGL 2
+#define PDF 3
 enum {
   CORNER = 0,
   CORNERS = 1,
@@ -144,6 +153,29 @@ static RenderTexture2D _canvas;
 // STROKE MACRO
 #define STROKE_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
 #define stroke(...) STROKE_CHOOSER(__VA_ARGS__, stroke4, stroke3, stroke2, stroke1, DUMMY)(__VA_ARGS__)
+
+// abs: type-preserving so integer array subscripts stay integers
+static inline int _pde_absi(int v) { return v < 0 ? -v : v; }
+#define abs(X) _Generic((X), int: _pde_absi, default: fabsf)(X)
+
+// COLOR PACKER (arity-routed): color(r,g,b), color(r,g,b,a), and single-arg
+// forms pass through unpacked (hex literals arrive pre-packed by pde2c)
+static inline uint32_t pack_color1(uint32_t packed) { return packed; }
+static inline uint32_t pack_color2(float g, float a) {
+  unsigned char gray = (unsigned char)g;
+  return ((uint32_t)(unsigned char)a << 24) | ((uint32_t)gray << 16) |
+         ((uint32_t)gray << 8) | gray;
+}
+static inline uint32_t pack_color3(float r, float g, float b) {
+  return ((uint32_t)255 << 24) | ((uint32_t)(unsigned char)b << 16) |
+         ((uint32_t)(unsigned char)g << 8) | (unsigned char)r;
+}
+static inline uint32_t pack_color4(float r, float g, float b, float a) {
+  return ((uint32_t)(unsigned char)a << 24) | ((uint32_t)(unsigned char)b << 16) |
+         ((uint32_t)(unsigned char)g << 8) | (unsigned char)r;
+}
+#define PCOLOR_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
+#define pack_color(...) PCOLOR_CHOOSER(__VA_ARGS__, pack_color4, pack_color3, pack_color2, pack_color1)(__VA_ARGS__)
 
 // LINE MACRO
 #define LINE_CHOOSER(_1, _2, _3, _4, _5, _6, NAME, ...) NAME
@@ -344,13 +376,20 @@ static inline void colorMode3(int mode, float max1, float max2) { (void)mode; (v
 static inline void colorMode4(int mode, float max1, float max2, float max3) { (void)mode; (void)max1; (void)max2; (void)max3; }
 
 // Java-style modulo: works on floats like Processing's % (int math identical)
-static inline float pmod(float a, float b) {
+static inline float _pde_modf(float a, float b) {
   if (b == 0.0f) return 0.0f;
   float r = fmodf(a, b);
   // Processing keeps the divisor's sign convention (like C fmod); Java % on
   // negatives matches fmod, so no extra fixup needed.
   return r;
 }
+
+static inline int _pde_modi(int a, int b) {
+  return b != 0 ? a % b : 0;
+}
+
+// type-preserving: int % int stays an integer (array subscripts etc.)
+#define pmod(A, B) _Generic((A), int: _pde_modi, default: _pde_modf)(A, B)
 
 // anti-aliasing toggles: raylib draws smoothed by default; accepted and ignored
 static inline void smooth(void) {}
@@ -766,6 +805,73 @@ static inline const char* nfFloat(float value, int left, int right) {
   return buf;
 }
 
+// string concat / charAt (rotating static buffers, same trick as nf) /////
+static const char *_pde_numf(double v) {
+  static char bufs[4][64];
+  static int idx = 0;
+  char *out = bufs[idx];
+  idx = (idx + 1) & 3;
+  snprintf(out, 64, "%g", v);
+  return out;
+}
+
+static const char *_pde_cat(const char *a, const char *b) {
+  static char bufs[4][1024];
+  static int idx = 0;
+  char *out = bufs[idx];
+  idx = (idx + 1) & 3;
+  snprintf(out, 1024, "%s%s", a, b);
+  return out;
+}
+
+static const char *_pde_charat(const char *s, int i) {
+  static char bufs[4][2];
+  static int idx = 0;
+  char *out = bufs[idx];
+  idx = (idx + 1) & 3;
+  out[0] = s[i];
+  out[1] = '\0';
+  return out;
+}
+
+// Java expand(): grow an array keeping contents; new tail zero-filled.
+// Sizes are remembered from _pde_array_new so the copy length is known.
+typedef struct { void *ptr; size_t elems; size_t esz; } _PdeArrMeta;
+static _PdeArrMeta _pdeArrs[512];
+static int _pdeArrCount = 0;
+
+static inline void _pde_arr_register(void *p, size_t elems, size_t esz) {
+  if (!p || _pdeArrCount >= 512) return;
+  for (int i = 0; i < _pdeArrCount; i++) {
+    if (_pdeArrs[i].ptr == p) {
+      _pdeArrs[i].elems = elems;
+      _pdeArrs[i].esz = esz;
+      return;
+    }
+  }
+  _pdeArrs[_pdeArrCount].ptr = p;
+  _pdeArrs[_pdeArrCount].elems = elems;
+  _pdeArrs[_pdeArrCount].esz = esz;
+  _pdeArrCount++;
+}
+
+static inline void *_pde_expand(void **arrp, int newSize, size_t esz) {
+  if (newSize < 0) newSize = 0;
+  void *old = *arrp;
+  size_t oldElems = 0;
+  for (int i = 0; i < _pdeArrCount; i++) {
+    if (_pdeArrs[i].ptr == old) { oldElems = _pdeArrs[i].elems; break; }
+  }
+  void *grown = realloc(old, (size_t)newSize * esz);
+  if (!grown) return old;
+  if ((size_t)newSize > oldElems) {
+    memset((char *)grown + oldElems * esz, 0, ((size_t)newSize - oldElems) * esz);
+  }
+  *arrp = grown;
+  _pde_arr_register(grown, (size_t)newSize, esz);
+  return grown;
+}
+
 // pixels ////////////////////////////////////////////
 
 static inline void loadPixels(void) {
@@ -811,7 +917,10 @@ static inline void image(PGraphics pg, float x, float y) {
 
 static inline void pushMatrix(void) { rlPushMatrix(); }
 static inline void popMatrix(void) { rlPopMatrix(); }
-static inline void translate(float x, float y) { rlTranslatef(x, y, 0.0f); }
+static inline void translate2(float x, float y) { rlTranslatef(x, y, 0.0f); }
+static inline void translate3(float x, float y, float z) { rlTranslatef(x, y, z); }
+#define TRANSLATE_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define translate(...) TRANSLATE_CHOOSER(__VA_ARGS__, translate3, translate2, DUMMY)(__VA_ARGS__)
 static inline void rotate(float radians) { rlRotatef(radians * 57.295779513f, 0.0f, 0.0f, 1.0f); }
 static inline void scale(float s) { rlScalef(s, s, 1.0f); }
 
@@ -1365,6 +1474,57 @@ static inline void shearY(float angle) {
   rlMultMatrixf(m);
 }
 
+// PMatrix: snapshot of the current transform matrix (raylib layout) ///////
+typedef Matrix PMatrix;
+
+static inline PMatrix getMatrix(void) {
+  return rlGetMatrixModelview();
+}
+
+static inline void applyMatrix(PMatrix m) {
+  rlMultMatrixf((float *)&m);
+}
+
+// 3D primitives (OPENGL sketches) /////////////////////////////////////////
+// The canvas renders through an orthographic projection, so sphere() draws
+// under a temporary perspective projection (Processing's default camera
+// looks down -z from a distance proportional to the object size).
+static int _sphereDetail = 24;
+
+static inline void _pde_begin3d(float radius) {
+  rlDrawRenderBatchActive(); // flush queued 2D verts before swapping proj
+  float aspect = (float)width / (float)(height > 0 ? height : 1);
+  float camZ = radius * 4.0f + 100.0f;
+  Matrix proj = MatrixPerspective(60.0f * DEG2RAD, aspect,
+                                  0.01f, camZ + radius * 10.0f + 200.0f);
+  rlSetMatrixProjection(proj);
+  Matrix mv = rlGetMatrixModelview();
+  rlPushMatrix();
+  rlLoadIdentity();
+  rlMultMatrixf((float *)&mv);   // keep the sketch's translate/rotate stack
+  rlTranslatef(0.0f, 0.0f, -camZ);
+}
+
+static inline void _pde_end3d(void) {
+  rlPopMatrix();
+  rlDrawRenderBatchActive();     // flush 3D verts under perspective proj
+  rlSetMatrixProjection(MatrixOrtho(0.0f, (float)width, (float)height, 0.0f,
+                                    0.01f, 1000.0f));
+}
+
+static inline void sphereDetail(int n) {
+  if (n >= 3 && n <= 128) _sphereDetail = n;
+}
+
+static inline void sphere(float r) {
+  if (!_useFill && !_useStroke) return;
+  _pde_begin3d(r);
+  Vector3 c = { 0.0f, 0.0f, 0.0f };
+  if (_useFill) DrawSphere(c, r, _fillColor);
+  if (_useStroke) DrawSphereWires(c, r, _sphereDetail, _sphereDetail, _strokeColor);
+  _pde_end3d();
+}
+
 // Vector math /////////////////////////////////////////////////////////////////////////////////
 
 typedef struct {
@@ -1478,9 +1638,12 @@ static inline PVector *pvector_array_new(int n) {
   return arr;
 }
 
-// heap allocation for "new TYPE[n]" of any element type (zero-initialized)
+// heap allocation for "new TYPE[n]" of any element type (zero-initialized,
+// registered so expand() knows the old element count)
 static inline void *_pde_array_new(int n, size_t elemSize) {
-  return calloc((size_t)(n > 0 ? n : 1), elemSize);
+  void *p = calloc((size_t)(n > 0 ? n : 1), elemSize);
+  _pde_arr_register(p, (size_t)(n > 0 ? n : 0), elemSize);
+  return p;
 }
 
 // defer //////////////////////////////////////////////////////////////////

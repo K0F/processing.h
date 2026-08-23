@@ -56,6 +56,26 @@ bool is_function_return_type(Token t) {
   return false;
 }
 
+// Detect a Java trailing-array return DEFINITION: "TYPE name(params)[] {"
+bool is_trailing_array_def(Token *tokens, int num_tokens, int i) {
+  if (!is_function_return_type(tokens[i])) return false;
+  if (!(i + 4 < num_tokens)) return false;
+  if (tokens[i+1].type != TOKEN_IDENTIFIER) return false;
+  if (!(tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "(") == 0)) return false;
+  int depth = 0, close = -1;
+  for (int q = i + 2; q < num_tokens; q++) {
+    if (tokens[q].type == TOKEN_SYMBOL && strcmp(tokens[q].text, "(") == 0) depth++;
+    else if (tokens[q].type == TOKEN_SYMBOL && strcmp(tokens[q].text, ")") == 0) {
+      depth--;
+      if (depth == 0) { close = q; break; }
+    }
+  }
+  if (close < 0 || close + 3 >= num_tokens) return false;
+  return tokens[close+1].type == TOKEN_SYMBOL && strcmp(tokens[close+1].text, "[") == 0 &&
+         tokens[close+2].type == TOKEN_SYMBOL && strcmp(tokens[close+2].text, "]") == 0 &&
+         tokens[close+3].type == TOKEN_SYMBOL && strcmp(tokens[close+3].text, "{") == 0;
+}
+
 // Processing event callbacks are renamed so they can coexist with the
 // same-named state variables in processing.h (e.g. bool keyPressed).
 const char *event_callback_suffix(const char *name) {
@@ -119,8 +139,9 @@ int rewrite_modulo(Token *tokens, int num_tokens, Token **out_tokens) {
       } else if (t.type == TOKEN_OPERATOR) {
         if (depth == 0) break;
       }
-      else if (t.type == TOKEN_KEYWORD || t.type == TOKEN_STRING || t.type == TOKEN_EOF) break;
-      /* IDENTIFIER / NUMBER: part of the operand, keep scanning */
+      else if (t.type == TOKEN_EOF ||
+               ((t.type == TOKEN_KEYWORD || t.type == TOKEN_STRING) && depth == 0)) break;
+      /* IDENTIFIER / NUMBER / casts like (int) inside parens: keep scanning */
       leftStart--;
     }
     leftStart++; // inclusive start of left operand in out[]
@@ -169,6 +190,137 @@ int rewrite_modulo(Token *tokens, int num_tokens, Token **out_tokens) {
     out[o++] = close;
 
     i = rightEnd - 1; // continue after right operand
+  }
+  *out_tokens = out;
+  return o;
+}
+
+// Pre-pass: v.charAt(i) -> _pde_charat(v, i) so downstream passes see a
+// plain function call instead of Java-style method dispatch.
+int rewrite_charat(Token *tokens, int num_tokens, Token **out_tokens) {
+  Token *out = malloc(sizeof(Token) * (num_tokens * 2 + 16));
+  int o = 0;
+  for (int i = 0; i < num_tokens; i++) {
+    if (!(tokens[i].type == TOKEN_IDENTIFIER &&
+          i + 3 < num_tokens &&
+          tokens[i+1].type == TOKEN_DOT &&
+          tokens[i+2].type == TOKEN_IDENTIFIER &&
+          strcmp(tokens[i+2].text, "charAt") == 0 &&
+          tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "(") == 0)) {
+      out[o++] = tokens[i];
+      continue;
+    }
+    Token fn = tokens[i];
+    snprintf(fn.text, MAX_TOKEN_TEXT, "_pde_charat");
+    fn.type = TOKEN_IDENTIFIER;
+    out[o++] = fn;
+    Token open = tokens[i]; strcpy(open.text, "("); open.type = TOKEN_SYMBOL;
+    out[o++] = open;
+    out[o++] = tokens[i]; // receiver
+    Token comma = tokens[i]; strcpy(comma.text, ","); comma.type = TOKEN_SYMBOL;
+    out[o++] = comma;
+    i += 3; // consumed: receiver . charAt (
+  }
+  *out_tokens = out;
+  return o;
+}
+
+// extent of one concat operand starting at t[start]: stops at a top-level
+// '+', ',', ';', '}' or unbalanced closer; returns exclusive end index
+static int concat_operand_end(Token *t, int n, int start) {
+  int depth = 0, j = start;
+  while (j < n) {
+    Token tk = t[j];
+    if (tk.type == TOKEN_SYMBOL) {
+      const char *s = tk.text;
+      if (strcmp(s, "(") == 0 || strcmp(s, "[") == 0) depth++;
+      else if (strcmp(s, ")") == 0 || strcmp(s, "]") == 0) {
+        if (depth == 0) break;
+        depth--;
+      }
+      else if (depth == 0 &&
+               (strcmp(s, ",") == 0 || strcmp(s, ";") == 0 || strcmp(s, "}") == 0)) break;
+    } else if (tk.type == TOKEN_OPERATOR && depth == 0 &&
+               strcmp(tk.text, "+") == 0) break;
+    else if (tk.type == TOKEN_EOF) break;
+    j++;
+  }
+  return j;
+}
+
+// does the operand evaluate to a string? (string literal or _pde_charat call)
+static bool concat_operand_stringy(Token *t, int start, int end) {
+  for (int j = start; j < end; j++) {
+    if (t[j].type == TOKEN_STRING) return true;
+    if (t[j].type == TOKEN_IDENTIFIER && strcmp(t[j].text, "_pde_charat") == 0) return true;
+    if (t[j].type == TOKEN_IDENTIFIER && strcmp(t[j].text, "str") == 0) return true;
+  }
+  return false;
+}
+
+// Fold "lit" + a + "b" chains into _pde_cat(...) calls. Right-assoc nesting
+// (concatenation is associative). Numeric operands are wrapped in
+// _pde_numf(...); string-valued operands pass through untouched.
+int rewrite_concat(Token *tokens, int num_tokens, Token **out_tokens) {
+  Token *out = malloc(sizeof(Token) * (num_tokens * 8 + 64));
+  int o = 0;
+  int i = 0;
+  while (i < num_tokens) {
+    if (!(tokens[i].type == TOKEN_STRING && i + 1 < num_tokens &&
+          tokens[i+1].type == TOKEN_OPERATOR &&
+          strcmp(tokens[i+1].text, "+") == 0)) {
+      out[o++] = tokens[i++];
+      continue;
+    }
+
+    // collect chain segments: seg 0 is the leading string literal
+    int segStart[64], segEnd[64];
+    bool segStr[64];
+    int m = 0;
+    segStart[m] = i; segEnd[m] = i + 1; segStr[m] = true; m++;
+    int j = i + 1;
+    while (j < num_tokens && tokens[j].type == TOKEN_OPERATOR &&
+           strcmp(tokens[j].text, "+") == 0 && m < 64) {
+      int s = j + 1;
+      int e = concat_operand_end(tokens, num_tokens, s);
+      if (e <= s) break;
+      segStart[m] = s; segEnd[m] = e;
+      segStr[m] = (e == s + 1 && tokens[s].type == TOKEN_STRING);
+      m++;
+      j = e;
+    }
+
+    Token anchor = tokens[i]; // line/fileId donor
+    #define PDE_EMIT(txt, typ) { \
+      Token mk = anchor; \
+      snprintf(mk.text, MAX_TOKEN_TEXT, "%s", txt); \
+      mk.type = typ; \
+      out[o++] = mk; \
+    }
+    #define PDE_COPYRANGE(a, b) { \
+      for (int q = (a); q < (b); q++) out[o++] = tokens[q]; \
+    }
+
+    PDE_EMIT("_pde_cat", TOKEN_IDENTIFIER);
+    PDE_EMIT("(", TOKEN_SYMBOL);
+    PDE_COPYRANGE(segStart[0], segEnd[0]);
+    for (int k = 1; k < m; k++) {
+      PDE_EMIT(",", TOKEN_SYMBOL);
+      if (k < m - 1) { PDE_EMIT("_pde_cat", TOKEN_IDENTIFIER); PDE_EMIT("(", TOKEN_SYMBOL); }
+      if (segStr[k]) {
+        PDE_COPYRANGE(segStart[k], segEnd[k]);
+      } else {
+        PDE_EMIT("_pde_numf", TOKEN_IDENTIFIER);
+        PDE_EMIT("(", TOKEN_SYMBOL);
+        PDE_COPYRANGE(segStart[k], segEnd[k]);
+        PDE_EMIT(")", TOKEN_SYMBOL);
+      }
+    }
+    for (int k = 0; k < m - 1; k++) PDE_EMIT(")", TOKEN_SYMBOL);
+    #undef PDE_EMIT
+    #undef PDE_COPYRANGE
+
+    i = j;
   }
   *out_tokens = out;
   return o;
@@ -385,6 +537,14 @@ int tokenize(const char *source, Token *tokens) {
       continue;
     }
 
+    // import statements reference external Java libraries: drop them
+    if (source[i] == 'i' && strncmp(&source[i], "import", 6) == 0 &&
+        !isalnum(source[i+6]) && source[i+6] != '_') {
+      while (source[i] != '\0' && source[i] != ';' && source[i] != '\n') i++;
+      if (source[i] == ';') i++;
+      continue;
+    }
+
     // keywords / identifiers
     if (isalpha(source[i]) || source[i] == '_') {
       int len = 0;
@@ -508,9 +668,79 @@ int main(int argc, char *argv[]) {
     num_tokens = new_count;
   }
 
-  // Print framework header and native little-endian A-B-G-R color bit-packer
-  printf("#include \"processing.h\"\n");
-  printf("#define pack_color(r, g, b) (((uint32_t)255 << 24) | ((uint32_t)(b) << 16) | ((uint32_t)(g) << 8) | (uint32_t)(r))\n\n");
+  // v.charAt(i) -> _pde_charat(v, i), then "a" + x + "b" -> _pde_cat(...)
+  {
+    Token *r;
+    int n = rewrite_charat(tokens, num_tokens, &r);
+    free(tokens);
+    tokens = r;
+    num_tokens = n;    n = rewrite_concat(tokens, num_tokens, &r);
+    free(tokens);
+    tokens = r;
+    num_tokens = n;
+  }
+
+  // Java allows a variable and a function to share a name (separate
+  // namespaces); C does not. Rename colliding functions NAME -> NAME_fn at
+  // definition and call sites (call = IDENT followed by "(").
+  {
+    char (*funcDefs)[MAX_TOKEN_TEXT] = malloc(MAX_TOKEN_TEXT * MAX_TOKENS);
+    int funcCount = 0;
+    for (int p = 1; p < num_tokens && funcCount < MAX_TOKENS; p++) {
+      if (!is_function_return_type(tokens[p - 1]) || tokens[p].type != TOKEN_IDENTIFIER) continue;
+      if (!(p + 1 < num_tokens && tokens[p + 1].type == TOKEN_SYMBOL &&
+            strcmp(tokens[p + 1].text, "(") == 0)) continue;
+      int depth = 0, close = -1;
+      for (int q = p + 1; q < num_tokens; q++) {
+        if (tokens[q].type == TOKEN_SYMBOL && strcmp(tokens[q].text, "(") == 0) depth++;
+        else if (tokens[q].type == TOKEN_SYMBOL && strcmp(tokens[q].text, ")") == 0) {
+          depth--;
+          if (depth == 0) { close = q; break; }
+        }
+      }
+      if (close < 0 || close + 1 >= num_tokens) continue;
+      bool bodyAfter =
+        (tokens[close+1].type == TOKEN_SYMBOL && strcmp(tokens[close+1].text, "{") == 0) ||
+        (close + 3 < num_tokens &&
+         tokens[close+1].type == TOKEN_SYMBOL && strcmp(tokens[close+1].text, "[") == 0 &&
+         tokens[close+2].type == TOKEN_SYMBOL && strcmp(tokens[close+2].text, "]") == 0 &&
+         tokens[close+3].type == TOKEN_SYMBOL && strcmp(tokens[close+3].text, "{") == 0);
+      if (!bodyAfter) continue;
+      snprintf(funcDefs[funcCount++], MAX_TOKEN_TEXT, "%s", tokens[p].text);
+    }
+    int renames = 0;
+    for (int p = 0; p < num_tokens && renames < 64; p++) {
+      if (tokens[p].type != TOKEN_IDENTIFIER) continue;
+      bool isFunc = false;
+      for (int q = 0; q < funcCount; q++) {
+        if (strcmp(funcDefs[q], tokens[p].text) == 0) { isFunc = true; break; }
+      }
+      if (!isFunc) continue;
+      // declared as a variable too? "TYPE name" where next isn't "("
+      bool alsoVar = false;
+      for (int q = 1; q < num_tokens; q++) {
+        if (tokens[q].type != TOKEN_IDENTIFIER || strcmp(tokens[q].text, tokens[p].text) != 0)
+          continue;
+        if (!is_function_return_type(tokens[q - 1])) continue;
+        if (q + 1 < num_tokens && tokens[q + 1].type == TOKEN_SYMBOL &&
+            strcmp(tokens[q + 1].text, "(") == 0) continue; // the function itself
+        alsoVar = true;
+        break;
+      }
+      if (!alsoVar) continue;
+      if (p + 1 < num_tokens && tokens[p + 1].type == TOKEN_SYMBOL &&
+          strcmp(tokens[p + 1].text, "(") == 0) {
+        char buf[MAX_TOKEN_TEXT];
+        snprintf(buf, sizeof(buf), "%s_fn", tokens[p].text);
+        snprintf(tokens[p].text, MAX_TOKEN_TEXT, "%s", buf);
+        renames++;
+      }
+    }
+    free(funcDefs);
+  }
+
+  // Print framework header (pack_color lives in processing.h, arity-routed)
+  printf("#include \"processing.h\"\n\n");
 
   // ---- forward declaration pre-scan -------------------------------------
   // Scan for "TYPE NAME(params) {" definitions and emit C prototypes so
@@ -519,6 +749,7 @@ int main(int argc, char *argv[]) {
     for (int p = 1; p < num_tokens; p++) {
       // "TYPE NAME(" or array-typed "TYPE[] NAME(" (p stays on NAME)
       bool arrayReturn = false;
+      int retIdx = p - 1;
       if (!is_function_return_type(tokens[p - 1]) || tokens[p].type != TOKEN_IDENTIFIER) {
         if (!(p >= 3 &&
               tokens[p].type == TOKEN_IDENTIFIER &&
@@ -528,6 +759,7 @@ int main(int argc, char *argv[]) {
           continue;
         }
         arrayReturn = true;
+        retIdx = p - 3; // type-first form: TYPE sits three back
       }
 
       const char *fnName = tokens[p].text;
@@ -550,11 +782,19 @@ int main(int argc, char *argv[]) {
         }
       }
       if (close < 0 || close + 1 >= num_tokens) continue;
-      if (!(tokens[close + 1].type == TOKEN_SYMBOL && strcmp(tokens[close + 1].text, "{") == 0)) continue;
+      // Java trailing-array return: "TYPE name(...)[] {"
+      if (tokens[close + 1].type == TOKEN_SYMBOL && strcmp(tokens[close + 1].text, "[") == 0 &&
+          close + 3 < num_tokens &&
+          tokens[close + 2].type == TOKEN_SYMBOL && strcmp(tokens[close + 2].text, "]") == 0 &&
+          tokens[close + 3].type == TOKEN_SYMBOL && strcmp(tokens[close + 3].text, "{") == 0)
+      {
+        arrayReturn = true;
+      }
+      else if (!(tokens[close + 1].type == TOKEN_SYMBOL && strcmp(tokens[close + 1].text, "{") == 0)) continue;
 
       {
         char retType[64];
-        snprintf(retType, sizeof(retType), "%s", tokens[arrayReturn ? p - 3 : p - 1].text);
+        snprintf(retType, sizeof(retType), "%s", tokens[retIdx].text);
         if (strcmp(retType, "boolean") == 0) strcpy(retType, "bool");
         if (strcmp(retType, "color") == 0) strcpy(retType, "uint32_t");
         if (strcmp(retType, "String") == 0) strcpy(retType, "const char*");
@@ -590,12 +830,53 @@ int main(int argc, char *argv[]) {
     printf("\n");
   }
 
+  // strip Java trailing "[]" from function definitions in the token stream
+  // ("boolean f(int n)[] {" -> "boolean f(int n) {"); the emitter's rule 5c
+  // turns the return type into a pointer
+  {
+    for (int p = 0; p + 4 < num_tokens; p++) {
+      if (!is_trailing_array_def(tokens, num_tokens, p)) continue;
+      int depth = 0, close = -1;
+      for (int q = p + 2; q < num_tokens; q++) {
+        if (tokens[q].type == TOKEN_SYMBOL && strcmp(tokens[q].text, "(") == 0) depth++;
+        else if (tokens[q].type == TOKEN_SYMBOL && strcmp(tokens[q].text, ")") == 0) {
+          depth--;
+          if (depth == 0) { close = q; break; }
+        }
+      }
+      if (close < 0 || close + 3 >= num_tokens) continue;
+      memmove(&tokens[close + 1], &tokens[close + 3],
+              sizeof(Token) * (num_tokens - close - 3));
+      num_tokens -= 2;
+      // bake the pointer into the return-type token so the emitter (which
+      // maps "boolean"->"bool" etc.) prints e.g. "bool *"
+      {
+        char mapped[64];
+        snprintf(mapped, sizeof(mapped), "%s *", emit_c_type_str(tokens[p].text));
+        tokens[p].type = TOKEN_IDENTIFIER;
+        snprintf(tokens[p].text, MAX_TOKEN_TEXT, "%s", mapped);
+      }
+      p = close;
+    }
+  }
+
   int i = 0;
   int pendingBracketClose = 0;
   bool pendingCallocType = false;
   char lastArrayType[32] = "";
   int lastLine = -1;
   int lastFile = -1;
+
+  // expand(arr, n) call tracking: closing ")" gets ", sizeof(*arr))"
+  bool pendingExpand = false;
+  char expandVar[MAX_TOKEN_TEXT];
+  int expandDepth = 0;
+
+  // Java labeled breaks: "loop: for(...){ break loop; }"
+  // -> goto __loop_brk emitted after the loop's closing brace
+  struct { char name[MAX_TOKEN_TEXT]; int depth; } labelStack[16];
+  int labelCount = 0;
+  int braceDepth = 0;
   while (i < num_tokens) {
     Token current = tokens[i];
 
@@ -673,6 +954,57 @@ int main(int argc, char *argv[]) {
       if (braceInit) printf("%s %s[] = {", type_out, tokens[i+3].text);
       else           printf("%s *%s", type_out, tokens[i+3].text);
       i += braceInit ? 6 : 4;
+      // additional Java declarators in the same statement: "TYPE a[], b[], c;"
+      // array ones become extra pointers; plain scalars fall back to default
+      while (!braceInit &&
+             (i + 3 < num_tokens) &&
+             tokens[i].type == TOKEN_SYMBOL && strcmp(tokens[i].text, ",") == 0 &&
+             tokens[i+1].type == TOKEN_IDENTIFIER &&
+             tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "[") == 0 &&
+             tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "]") == 0)
+      {
+        printf(", *%s", tokens[i+1].text);
+        i += 4;
+      }
+      continue;
+    }
+
+    // 1b. Name-first array declarations: "TYPE name[]" (Java allows both
+    //     orders) incl. parameter lists "void f(float arr[], int b[])" and
+    //     declarator lists "TYPE a[], b[];" -> pointers / brace init kept
+    if ((is_type_token(current) ||
+         (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "PVector") == 0)) &&
+        (i + 3 < num_tokens) &&
+        tokens[i+1].type == TOKEN_IDENTIFIER &&
+        tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "[") == 0 &&
+        tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "]") == 0)
+    {
+      const char *type_out = emit_c_type_str(current.text);
+      bool braceInit = (i + 6 < num_tokens &&
+                        tokens[i+4].type == TOKEN_OPERATOR && strcmp(tokens[i+4].text, "=") == 0 &&
+                        tokens[i+5].type == TOKEN_SYMBOL && strcmp(tokens[i+5].text, "{") == 0);
+      if (braceInit) printf("%s %s[] = {", type_out, tokens[i+1].text);
+      else           printf("%s *%s", type_out, tokens[i+1].text);
+      i += braceInit ? 6 : 4;
+      // further declarators: ", b[]" (same type) or ", float b[]" (retyped,
+      // happens in parameter lists)
+      while (!braceInit &&
+             (i + 3 < num_tokens) &&
+             tokens[i].type == TOKEN_SYMBOL && strcmp(tokens[i].text, ",") == 0)
+      {
+        bool retyped = is_type_token(tokens[i+1]) ||
+                       (tokens[i+1].type == TOKEN_IDENTIFIER &&
+                        strcmp(tokens[i+1].text, "PVector") == 0);
+        int nameIdx = retyped ? i + 2 : i + 1;
+        if (tokens[nameIdx].type != TOKEN_IDENTIFIER) break;
+        if (!(tokens[nameIdx+1].type == TOKEN_SYMBOL &&
+              strcmp(tokens[nameIdx+1].text, "[") == 0 &&
+              tokens[nameIdx+2].type == TOKEN_SYMBOL &&
+              strcmp(tokens[nameIdx+2].text, "]") == 0)) break;
+        if (retyped) printf(", %s *%s", emit_c_type_str(tokens[i+1].text), tokens[nameIdx].text);
+        else         printf(", *%s", tokens[nameIdx].text);
+        i = nameIdx + 3;
+      }
       continue;
     }
 
@@ -746,14 +1078,8 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    // 3d. Common math aliases
-    if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "abs") == 0 &&
-        (i + 1 < num_tokens) && tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "(") == 0)
-    {
-      printf("fabsf(");
-      i += 2;
-      continue;
-    }
+    // 3d. Common math aliases (abs handled by a _Generic macro in
+    //     processing.h so integer subscripts stay integers)
     if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "parseInt") == 0 &&
         (i + 1 < num_tokens) && tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "(") == 0)
     {
@@ -798,17 +1124,17 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    // 5b. Transform "new TYPE[n]" -> "(TYPE *)calloc(n, sizeof(TYPE))"
-    // (PVector keeps its zeroing helper; primitives get calloc)
+    // 5b. Transform "new TYPE[n]" -> "(TYPE *)_pde_array_new(n, sizeof(TYPE))"
+    // (PVector constructor form handled above; this is the array form)
     if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "new") == 0 &&
         (i + 3 < num_tokens) &&
         (tokens[i+1].type == TOKEN_IDENTIFIER || tokens[i+1].type == TOKEN_KEYWORD) &&
-        strcmp(tokens[i+1].text, "PVector") != 0 &&
         tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "[") == 0 &&
         !(tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "]") == 0))
     {
-      snprintf(lastArrayType, sizeof(lastArrayType), "%s", tokens[i+1].text);
-      printf("(%s *)_pde_array_new(", tokens[i+1].text);
+      const char *elemType = emit_c_type_str(tokens[i+1].text);
+      snprintf(lastArrayType, sizeof(lastArrayType), "%s", elemType);
+      printf("(%s *)_pde_array_new(", elemType);
       pendingBracketClose++;
       pendingCallocType = true; // closing "]" emits ", sizeof(TYPE))"
       i += 3;
@@ -915,9 +1241,38 @@ int main(int argc, char *argv[]) {
         tokens[i+2].type == TOKEN_IDENTIFIER &&
         strcmp(tokens[i+2].text, "length") == 0)
     {
-      printf("(sizeof(%s) / sizeof(*%s))", current.text, current.text);
+      printf("(int)(sizeof(%s) / sizeof(*%s))", current.text, current.text);
       i += 3;
       continue;
+    }
+
+    // 8d. expand(arr, n) keeps contents, zero-fills the tail like Java
+    if (current.type == TOKEN_IDENTIFIER && !pendingExpand &&
+        strcmp(current.text, "expand") == 0 &&
+        (i + 3 < num_tokens) &&
+        tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "(") == 0 &&
+        tokens[i+2].type == TOKEN_IDENTIFIER)
+    {
+      snprintf(expandVar, sizeof(expandVar), "%s", tokens[i+2].text);
+      printf("_pde_expand((void **)&%s", expandVar);
+      pendingExpand = true;
+      expandDepth = 1;
+      i += 3;
+      continue;
+    }
+
+    // track the expand( ... ) call so its closing ")" gains the elem size
+    if (pendingExpand) {
+      if (current.type == TOKEN_SYMBOL && strcmp(current.text, "(") == 0) {
+        expandDepth++;
+      } else if (current.type == TOKEN_SYMBOL && strcmp(current.text, ")") == 0) {
+        if (--expandDepth == 0) {
+          printf(", sizeof(*%s))", expandVar);
+          pendingExpand = false;
+          i++;
+          continue;
+        }
+      }
     }
 
     // 9. Standardize environment entry point formatting
@@ -929,11 +1284,53 @@ int main(int argc, char *argv[]) {
       }
     }
 
+    // 10a. Java labeled loop: "loop: for(...)" -> register goto target,
+    //      drop the label (C has no labeled break)
+    if (current.type == TOKEN_IDENTIFIER && (i + 3 < num_tokens) &&
+        tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, ":") == 0 &&
+        ((tokens[i+2].type == TOKEN_KEYWORD &&
+          (strcmp(tokens[i+2].text, "for") == 0 || strcmp(tokens[i+2].text, "while") == 0)) ||
+         (tokens[i+2].type == TOKEN_IDENTIFIER && strcmp(tokens[i+2].text, "do") == 0)))
+    {
+      if (labelCount < 16) {
+        snprintf(labelStack[labelCount].name, MAX_TOKEN_TEXT, "%s", current.text);
+        labelStack[labelCount].depth = braceDepth;
+        labelCount++;
+      }
+      i += 2;
+      continue;
+    }
+
+    // 10b. labeled break -> goto the target emitted after the loop body
+    if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "break") == 0 &&
+        (i + 2 < num_tokens) && tokens[i+1].type == TOKEN_IDENTIFIER)
+    {
+      bool known = false;
+      for (int q = 0; q < labelCount; q++) {
+        if (strcmp(labelStack[q].name, tokens[i+1].text) == 0) { known = true; break; }
+      }
+      if (known) {
+        printf("goto __%s_brk;\n", tokens[i+1].text); // \n keeps #line valid
+        i += (tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, ";") == 0) ? 3 : 2;
+        continue;
+      }
+    }
+
     if (current.type == TOKEN_EOF) {
       break;
     }
 
     printf("%s", current.text);
+
+    // brace depth drives labeled-break target placement ("} __lbl_brk: ;")
+    if (current.type == TOKEN_SYMBOL && strcmp(current.text, "}") == 0) {
+      braceDepth--;
+      while (labelCount > 0 && labelStack[labelCount-1].depth == braceDepth) {
+        printf("\n__%s_brk: ;", labelStack[--labelCount].name);
+      }
+    } else if (current.type == TOKEN_SYMBOL && strcmp(current.text, "{") == 0) {
+      braceDepth++;
+    }
 
     // Spacing rules
     if (current.type == TOKEN_SYMBOL && strcmp(current.text, ";") == 0) {

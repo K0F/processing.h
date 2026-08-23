@@ -1,0 +1,70 @@
+#!/bin/sh
+# wildtest — batch compile-check of real-world sketches against pde2c.
+#
+#   ./wildtest ~/src/2021        check every sketch dir under a tree
+#
+# Each directory containing .pde tabs is transpiled (tabs merged exactly
+# like ./run does) and gcc syntax-checked. Prints one line per sketch plus
+# a PASS/FAIL tally; the first error line is shown for failures.
+set -u
+
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+TREE="${1:-$SCRIPT_DIR}"
+
+if [ ! -d "$TREE" ]; then
+  echo "wildtest: no such directory: $TREE" >&2
+  exit 1
+fi
+
+if [ "$SCRIPT_DIR/pde2c.c" -nt "$SCRIPT_DIR/pde2c" ] || [ ! -x "$SCRIPT_DIR/pde2c" ]; then
+  gcc "$SCRIPT_DIR/pde2c.c" -o "$SCRIPT_DIR/pde2c" || exit 1
+fi
+
+TMP=$(mktemp -d /tmp/pdewild.XXXXXX)
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
+pass=0
+fail=0
+broken=0
+
+for dir in $(find "$TREE" -type f -name '*.pde' -exec dirname {} \; | sort -u); do
+  MAIN="$dir/none.pde"
+  [ -f "$dir/$(basename "$dir").pde" ] && MAIN="$dir/$(basename "$dir").pde"
+  {
+    [ -f "$MAIN" ] && { printf '//@file %s\n' "$(basename "$MAIN")"; cat "$MAIN"; }
+    for f in $(find "$dir" -maxdepth 1 -name '*.pde' | sort); do
+      [ "$f" = "$MAIN" ] && continue
+      printf '//@file %s\n' "$(basename "$f")"
+      cat "$f"
+    done
+  } > "$TMP/combined.pde"
+
+  tag=$(printf '%s' "${dir#"$TREE"/}" | tr '/' ':')
+
+  if ! "$SCRIPT_DIR/pde2c" "$TMP/combined.pde" > "$TMP/sketch.c" 2> "$TMP/transpile.err"; then
+    first=$(grep -m1 'error:' "$TMP/transpile.err" | sed 's/^ *//')
+    printf '%-46s TRANSPILE-ERR  %s\n' "$tag" "${first:-unknown}"
+    fail=$((fail + 1))
+    continue
+  fi
+
+  if gcc -fsyntax-only -I"$SCRIPT_DIR" "$TMP/sketch.c" 2> "$TMP/gcc.err"; then
+    printf '%-46s PASS\n' "$tag"
+    pass=$((pass + 1))
+  else
+    # source-mapped first error (sketch lines) beats generated-code noise
+    first=$(grep -m1 '^sketch\.pde:[0-9]' "$TMP/gcc.err" | sed 's/^sketch\.pde:[0-9]*: *//')
+    [ -z "$first" ] && first=$(grep -m1 'error:' "$TMP/gcc.err" | sed 's/^ *//')
+    case "$first" in
+      *"expected*"*) broken=$((broken + 1))
+        printf '%-46s SOURCE-BROKEN  %s\n' "$tag" "${first:-unknown}" ;;
+      *)
+        printf '%-46s COMPILE-ERR    %s\n' "$tag" "${first:-unknown}"
+        fail=$((fail + 1)) ;;
+    esac
+  fi
+done
+
+total=$((pass + fail + broken))
+echo "----------------------------------------------"
+echo "pass $pass / $total (compile-err $fail, source-broken $broken)"

@@ -41,6 +41,15 @@ Syntax errors (unbalanced brackets) are caught before compilation with
 `file:line` messages pointing at your `.pde`; gcc errors on generated code are
 mapped back to the original source lines via `#line` directives.
 
+## Batch-testing real sketches
+
+```sh
+./wildtest ~/src/2021      # transpile + gcc syntax-check every sketch dir
+```
+
+Prints one line per sketch (PASS / TRANSPILE-ERR / COMPILE-ERR with the first
+error) and a tally — used to track how much of a real-world corpus runs.
+
 ## What works
 
 - **Rendering**: point, line, rect/ellipse/circle/square with `rectMode` /
@@ -62,13 +71,29 @@ mapped back to the original source lines via `#line` directives.
 - **Sketch structure**: `settings()`, `setup()`, `draw()`, forward declarations
   generated automatically, heap arrays `new float[n]`, `boolean/color/String`
   type mapping, `final` dropped
+- **Java-isms**: `import` lines dropped; Java-style arrays in both orders
+  (`float[] a` and `float a[]`, incl. lists like `float a[], b;` and array
+  parameters), `boolean[]` + `new boolean[n]`, trailing-array returns
+  (`boolean sieve(int n)[]`), Java `%` stays int-preserving via `_Generic`,
+  type-preserving `abs`, labeled breaks (`loop: for(...) { break loop; }`),
+  variable/function name collisions auto-renamed (`NAME` -> `NAME_fn`)
+- **Strings**: `"a: " + x + "!"` concatenation folded into `_pde_cat` calls
+  (numbers formatted `%g`), `.charAt(i)` mapped to a helper returning a
+  1-char string, `color()` arity-routed incl. single packed arg
+- **3D (OPENGL sketches)**: `translate(x,y,z)`, renderer constants
+  (`P2D/P3D/OPENGL` accepted by `size()`), `sphere()/sphereDetail()` drawn
+  under a temporary perspective projection (fill faces + stroke wires),
+  `PMatrix/getMatrix()/applyMatrix()` backed by raylib matrices
 
-Out of ~100 real-world sketches used as a test corpus, 17 currently compile
-and run natively. The rest are blocked by deeper Java features.
+Out of the ~20 real-world sketches in `~/src/2021` used as a test corpus, 9
+currently compile, link and run natively (`./wildtest ~/src/2021`). The rest
+are blocked by classes/inheritance or external libraries (oscP5, MidiBus,
+XML), or have broken sources.
 
 ## Not supported yet
 
-Classes and inheritance, `ArrayList` and collections, generics, string
-concatenation (`"a" + x`), `import` and external libraries (OscP5, video),
-try/catch, `String` methods, `curveVertex/bezierVertex` inside arbitrary paths,
+Classes and inheritance, `ArrayList` and collections, generics,
+`import`ed external libraries (OscP5, video, MidiBus),
+try/catch, most `String` methods beyond `charAt`,
+`curveVertex/bezierVertex` inside arbitrary paths,
 `loadStrings/loadImage` file IO.
