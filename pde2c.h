@@ -1,5 +1,6 @@
 #define MAX_TOKEN_TEXT 256
 #define MAX_TOKENS 10000
+#define MAX_FILES 64
 
 typedef enum {
   TOKEN_KEYWORD,    // void, float, boolean, int...
@@ -16,6 +17,5 @@ typedef struct {
   TokenType type;
   char text[MAX_TOKEN_TEXT];
   int line;
+  int fileId;
 } Token;
-
-

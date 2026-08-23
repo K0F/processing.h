@@ -27,6 +27,20 @@ gcc mysketch.c -o mysketch -O2 -I. -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
 ./mysketch
 ```
 
+Or use the `run` wrapper, which does all of it in a temp dir and cleans up
+after the window closes:
+
+```sh
+./run                    # sketch in current directory (all .pde tabs together)
+./run ~/path/to/sketch   # sketch elsewhere
+PDE_OPTS=-O2 ./run       # override fast -O0 default compile
+PDE_KEEP=1 ./run         # keep the tmp dir to inspect generated C
+```
+
+Syntax errors (unbalanced brackets) are caught before compilation with
+`file:line` messages pointing at your `.pde`; gcc errors on generated code are
+mapped back to the original source lines via `#line` directives.
+
 ## What works
 
 - **Rendering**: point, line, rect/ellipse/circle/square with `rectMode` /

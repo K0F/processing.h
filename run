@@ -1,0 +1,65 @@
+#!/bin/sh
+# run — transpile + compile + execute Processing sketches in one shot.
+#
+#   ./run                    sketch from current directory
+#   ./run ~/path/to/sketch   sketch elsewhere
+#   PDE_OPTS=-O2 ./run       override fast -O0 default
+#   PDE_KEEP=1 ./run         keep tmp dir for inspecting generated C
+#
+# All .pde files in the directory are treated as tabs of one sketch and
+# compiled together (main tab named after the directory goes first).
+set -u
+
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+DIR="${1:-$PWD}"
+
+if [ ! -d "$DIR" ]; then
+  echo "run: no such directory: $DIR" >&2
+  exit 1
+fi
+
+TMP=$(mktemp -d /tmp/pderun.XXXXXX)
+cleanup() { rm -rf "$TMP"; }
+trap cleanup EXIT INT TERM
+
+# rebuild transpiler only when its source changed
+if [ "$SCRIPT_DIR/pde2c.c" -nt "$SCRIPT_DIR/pde2c" ] || [ ! -x "$SCRIPT_DIR/pde2c" ]; then
+  gcc "$SCRIPT_DIR/pde2c.c" -o "$SCRIPT_DIR/pde2c" || exit 1
+fi
+
+# collect tabs: main tab first, then the rest alphabetically
+MAIN="$TMP/none.pde"
+[ -f "$DIR/$(basename "$DIR").pde" ] && MAIN="$DIR/$(basename "$DIR").pde"
+{
+  [ "$MAIN" != "$TMP/none.pde" ] && { printf '//@file %s\n' "$(basename "$MAIN")"; cat "$MAIN"; }
+  for f in $(find "$DIR" -maxdepth 1 -name '*.pde' | sort); do
+    [ "$f" = "$MAIN" ] && continue
+    printf '//@file %s\n' "$(basename "$f")"
+    cat "$f"
+  done
+} > "$TMP/combined.pde"
+
+if ! grep -q '[^[:space:]]' "$TMP/combined.pde"; then
+  echo "run: no .pde files found in $DIR" >&2
+  exit 1
+fi
+
+# transpile (validation errors inside pde2c print file:line and exit 1)
+"$SCRIPT_DIR/pde2c" "$TMP/combined.pde" > "$TMP/sketch.c" || exit 1
+
+# compile fast; on failure show a readable, source-mapped excerpt
+CFLAGS="${PDE_OPTS--O0 -pipe}"
+if ! gcc $CFLAGS -I"$SCRIPT_DIR" "$TMP/sketch.c" -o "$TMP/sketch" \
+     -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 \
+     2> "$TMP/gcc.err"; then
+  head -15 "$TMP/gcc.err"
+  if [ "${PDE_KEEP:-0}" = "1" ]; then
+    echo "run: compilation failed, kept build dir $TMP" >&2
+    trap - EXIT
+  else
+    echo "run: compilation failed (set PDE_KEEP=1 to inspect generated C)" >&2
+  fi
+  exit 1
+fi
+
+"$TMP/sketch"

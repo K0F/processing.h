@@ -7,6 +7,22 @@
 
 #define MAX_LINE_LENGTH 1024
 
+// file registry: tokens reference source files by id so generated C
+// can carry #line directives pointing back at the original .pde tabs
+static char *_fileNames[MAX_FILES];
+static int _numFiles = 0;
+
+int pdeRegisterFile(const char *name) {
+  if (_numFiles >= MAX_FILES) return _numFiles - 1;
+  _fileNames[_numFiles] = strdup(name);
+  return _numFiles++;
+}
+
+const char *pdeFileName(int id) {
+  if (id < 0 || id >= _numFiles) return "sketch.pde";
+  return _fileNames[id];
+}
+
 // Tokenizer /////////////////////////
 bool is_keyword(const char *str) {
   const char *keywords[] = {
@@ -209,6 +225,7 @@ int tokenize(const char *source, Token *tokens) {
   int t_count = 0;
   int i = 0;
   int current_line = 1;
+  int current_file = pdeRegisterFile("sketch.pde");
 
   while (source[i] != '\0') {
     if (source[i] == '\n') {
@@ -223,6 +240,20 @@ int tokenize(const char *source, Token *tokens) {
 
     // comments
     if (source[i] == '/' && source[i+1] == '/') {
+      // file marker injected by the run wrapper: //@file name.pde
+      if (strncmp(&source[i+2], "@file ", 6) == 0) {
+        const char *p = &source[i+8];
+        while (*p == ' ') p++;
+        char name[MAX_TOKEN_TEXT];
+        int n = 0;
+        while (*p != '\0' && *p != '\n' && *p != '\r' && n < MAX_TOKEN_TEXT-1)
+          name[n++] = *p++;
+        name[n] = '\0';
+        current_file = pdeRegisterFile(name);
+        current_line = 0; // ++ on next newline -> 1
+        while (source[i] != '\n' && source[i] != '\0') i++;
+        continue;
+      }
       while (source[i] != '\n' && source[i] != '\0') i++;
       continue;
     }
@@ -253,6 +284,7 @@ int tokenize(const char *source, Token *tokens) {
         snprintf(tokens[t_count].text, MAX_TOKEN_TEXT, "0x%02X%02X%02XFF",
                  (unsigned)((255u << 24) | (b << 16) | (g << 8) | r));
         tokens[t_count].line = current_line;
+      tokens[t_count].fileId = current_file;
         t_count++;
         i += 7;
         continue;
@@ -264,6 +296,7 @@ int tokenize(const char *source, Token *tokens) {
       tokens[t_count].type = TOKEN_DOT;
       strcpy(tokens[t_count].text, ".");
       tokens[t_count].line = current_line;
+      tokens[t_count].fileId = current_file;
       t_count++;
       i++;
       continue;
@@ -275,6 +308,7 @@ int tokenize(const char *source, Token *tokens) {
       tokens[t_count].text[0] = source[i];
       tokens[t_count].text[1] = '\0';
       tokens[t_count].line = current_line;
+      tokens[t_count].fileId = current_file;
       t_count++;
       i++;
       continue;
@@ -291,6 +325,7 @@ int tokenize(const char *source, Token *tokens) {
       strncpy(tokens[t_count].text, &source[start], len);
       tokens[t_count].text[len] = '\0';
       tokens[t_count].line = current_line;
+      tokens[t_count].fileId = current_file;
       t_count++;
       i++; 
       continue;
@@ -308,6 +343,7 @@ int tokenize(const char *source, Token *tokens) {
       strncpy(tokens[t_count].text, &source[start], len);
       tokens[t_count].text[len] = '\0';
       tokens[t_count].line = current_line;
+      tokens[t_count].fileId = current_file;
       t_count++;
       if (source[i] == '\'') i++;
       continue;
@@ -327,6 +363,7 @@ int tokenize(const char *source, Token *tokens) {
       }
       tokens[t_count].text[len] = '\0';
       tokens[t_count].line = current_line;
+      tokens[t_count].fileId = current_file;
       t_count++;
       continue;
     }
@@ -343,6 +380,7 @@ int tokenize(const char *source, Token *tokens) {
       }
       tokens[t_count].text[len] = '\0';
       tokens[t_count].line = current_line;
+      tokens[t_count].fileId = current_file;
       t_count++;
       continue;
     }
@@ -361,6 +399,7 @@ int tokenize(const char *source, Token *tokens) {
         tokens[t_count].type = TOKEN_IDENTIFIER;
       }
       tokens[t_count].line = current_line;
+      tokens[t_count].fileId = current_file;
       t_count++;
       continue;
     }
@@ -371,6 +410,7 @@ int tokenize(const char *source, Token *tokens) {
   tokens[t_count].type = TOKEN_EOF;
   strcpy(tokens[t_count].text, "EOF");
   tokens[t_count].line = current_line;
+      tokens[t_count].fileId = current_file;
   return t_count;
 }
 
@@ -406,6 +446,58 @@ int main(int argc, char *argv[]) {
   }
 
   int num_tokens = tokenize(source_buffer, tokens);
+
+  // ---- bracket balance validation ----------------------------------------
+  // Cheap syntax gate before transpilation: unbalanced or mismatched
+  // () [] {} reported with original file/line, so users never see the
+  // confusing gcc errors on generated C for this common typo class.
+  {
+    struct { char open; int line; int fileId; } stack[256];
+    int sp = 0;
+    int errCount = 0;
+    for (int k = 0; k < num_tokens && errCount < 3; k++) {
+      Token t = tokens[k];
+      if (t.type != TOKEN_SYMBOL) continue;
+      const char *s = t.text;
+      if (strcmp(s, "(") == 0 || strcmp(s, "[") == 0 || strcmp(s, "{") == 0) {
+        if (sp < 256) {
+          stack[sp].open = s[0];
+          stack[sp].line = t.line;
+          stack[sp].fileId = t.fileId;
+        }
+        sp++;
+      } else if (strcmp(s, ")") == 0 || strcmp(s, "]") == 0 || strcmp(s, "}") == 0) {
+        char close = s[0];
+        char want = (close == ')') ? '(' : (close == ']') ? '[' : '{';
+        if (sp == 0) {
+          fprintf(stderr, "%s:%d: error: unmatched '%c'\n",
+                  pdeFileName(t.fileId), t.line, close);
+          errCount++;
+        } else {
+          sp--;
+          if (sp < 256 && stack[sp].open != want) {
+            fprintf(stderr,
+                    "%s:%d: error: '%c' does not match '%c' opened at %s:%d\n",
+                    pdeFileName(t.fileId), t.line, close, stack[sp].open,
+                    pdeFileName(stack[sp].fileId), stack[sp].line);
+            errCount++;
+          }
+        }
+      }
+    }
+    if (errCount == 0 && sp > 0) {
+      int top = (sp - 1 < 256) ? sp - 1 : 255;
+      fprintf(stderr, "%s:%d: error: unclosed '%c' opened here (%d unmatched total)\n",
+              pdeFileName(stack[top].fileId), stack[top].line,
+              stack[top].open, sp);
+      errCount++;
+    }
+    if (errCount > 0) {
+      free(tokens);
+      free(source_buffer);
+      return 1;
+    }
+  }
 
   // Java-style % (float-capable) -> pmod(a,b)
   {
@@ -502,8 +594,22 @@ int main(int argc, char *argv[]) {
   int pendingBracketClose = 0;
   bool pendingCallocType = false;
   char lastArrayType[32] = "";
+  int lastLine = -1;
+  int lastFile = -1;
   while (i < num_tokens) {
     Token current = tokens[i];
+
+    // #line directives: map generated C positions back to the original
+    // .pde tabs so gcc diagnostics cite the user's own source lines.
+    // A directive must start at column 0: split the line if needed.
+    if (current.line != lastLine || current.fileId != lastFile) {
+      bool atBOL = (i == 0) ||
+        (tokens[i-1].type == TOKEN_SYMBOL && strcmp(tokens[i-1].text, ";") == 0);
+      if (!atBOL) printf("\n");
+      printf("#line %d \"%s\"\n", current.line, pdeFileName(current.fileId));
+      lastLine = current.line;
+      lastFile = current.fileId;
+    }
 
     // drop Java "final" modifier before any type keyword or identifier
     if ((current.type == TOKEN_IDENTIFIER) && strcmp(current.text, "final") == 0 &&
