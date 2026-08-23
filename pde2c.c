@@ -373,13 +373,27 @@ int count_call_args(Token *tokens, int num_tokens, int open, int *close_out) {
 }
 
 
-int tokenize(const char *source, Token *tokens) {
+// Growable token buffer: sketches from the wild easily exceed any fixed
+// limit (a 3k-line multi-tab sketch overflows 10k tokens and segfaults).
+// Every loop iteration adds at most one token, so checking for two free
+// slots up front keeps the EOF sentinel safe as well.
+#define TOKEN_GROW()                                                          \
+  if ((size_t)(t_count + 2) > capacity) {                                     \
+    capacity *= 2;                                                            \
+    tokens = realloc(tokens, sizeof(Token) * capacity);                       \
+    if (!tokens) { fprintf(stderr, "pde2c: out of memory\n"); exit(1); }       \
+  }
+
+int tokenize(const char *source, Token **tokens_out, size_t capacity_in) {
   int t_count = 0;
   int i = 0;
   int current_line = 1;
   int current_file = pdeRegisterFile("sketch.pde");
+  size_t capacity = capacity_in ? capacity_in : 1 << 14;
+  Token *tokens = *tokens_out;
 
   while (source[i] != '\0') {
+    TOKEN_GROW();
     if (source[i] == '\n') {
       current_line++;
       i++;
@@ -469,9 +483,10 @@ int tokenize(const char *source, Token *tokens) {
     // strings
     if (source[i] == '"') {
       int start = i;
-      i++; 
+      i++;
       while (source[i] != '"' && source[i] != '\0') i++;
       int len = i - start + 1;
+      if (len > MAX_TOKEN_TEXT - 1) len = MAX_TOKEN_TEXT - 1; // clamp: wild sketches embed long data strings
 
       tokens[t_count].type = TOKEN_STRING;
       strncpy(tokens[t_count].text, &source[start], len);
@@ -490,6 +505,7 @@ int tokenize(const char *source, Token *tokens) {
       if (source[i] == '\\' && source[i+1] != '\0') i += 2; else if (source[i] != '\0') i++;
       while (source[i] != '\'' && source[i] != '\0') i++;
       int len = (i - start) + 1;
+      if (len > MAX_TOKEN_TEXT - 1) len = MAX_TOKEN_TEXT - 1;
 
       tokens[t_count].type = TOKEN_STRING;
       strncpy(tokens[t_count].text, &source[start], len);
@@ -524,7 +540,8 @@ int tokenize(const char *source, Token *tokens) {
     if (isdigit(source[i])) {
       int len = 0;
       tokens[t_count].type = TOKEN_NUMBER;
-      while (isdigit(source[i]) || source[i] == '.' || source[i] == 'f') {
+      while ((isdigit(source[i]) || source[i] == '.' || source[i] == 'f') &&
+             len < MAX_TOKEN_TEXT - 1) {
         if (source[i] == '.' && !isdigit(source[i+1])) {
           break;
         }
@@ -548,7 +565,8 @@ int tokenize(const char *source, Token *tokens) {
     // keywords / identifiers
     if (isalpha(source[i]) || source[i] == '_') {
       int len = 0;
-      while (isalnum(source[i]) || source[i] == '_') {
+      while ((isalnum(source[i]) || source[i] == '_') &&
+             len < MAX_TOKEN_TEXT - 1) {
         tokens[t_count].text[len++] = source[i++];
       }
       tokens[t_count].text[len] = '\0';
@@ -571,6 +589,7 @@ int tokenize(const char *source, Token *tokens) {
   strcpy(tokens[t_count].text, "EOF");
   tokens[t_count].line = current_line;
       tokens[t_count].fileId = current_file;
+  *tokens_out = tokens;
   return t_count;
 }
 
@@ -599,13 +618,14 @@ int main(int argc, char *argv[]) {
   source_buffer[read_bytes] = '\0';
   fclose(file);
 
-  Token *tokens = malloc(sizeof(Token) * MAX_TOKENS);
+  size_t token_capacity = 1 << 14;
+  Token *tokens = malloc(sizeof(Token) * token_capacity);
   if (!tokens) {
     free(source_buffer);
     return 1;
   }
 
-  int num_tokens = tokenize(source_buffer, tokens);
+  int num_tokens = tokenize(source_buffer, &tokens, token_capacity);
 
   // ---- bracket balance validation ----------------------------------------
   // Cheap syntax gate before transpilation: unbalanced or mismatched
@@ -898,6 +918,18 @@ int main(int argc, char *argv[]) {
         (tokens[i+1].type == TOKEN_IDENTIFIER || tokens[i+1].type == TOKEN_KEYWORD))
     {
       i++;
+      continue;
+    }
+
+    // drop Java/Processing "import x.y.*;" statements (may appear mid-file)
+    // and stray Java "package x.y;" declarations; external libraries are not
+    // linked, so their imports only produce garbage C if passed through
+    if (current.type == TOKEN_IDENTIFIER &&
+        (strcmp(current.text, "import") == 0 || strcmp(current.text, "package") == 0))
+    {
+      while (i < num_tokens &&
+             !(tokens[i].type == TOKEN_SYMBOL && strcmp(tokens[i].text, ";") == 0)) i++;
+      if (i < num_tokens) i++; // consume ';'
       continue;
     }
 

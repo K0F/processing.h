@@ -1,6 +1,6 @@
 #define MAX_TOKEN_TEXT 256
-#define MAX_TOKENS 10000
 #define MAX_FILES 64
+#define MAX_TOKENS 10000 // user-function name registry cap; token stream grows dynamically
 
 typedef enum {
   TOKEN_KEYWORD,    // void, float, boolean, int...
