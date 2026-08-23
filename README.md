@@ -15,6 +15,16 @@ implementing the Processing API on top of raylib.
 sketch.pde -> pde2c -> sketch.c -> gcc (with -lraylib) -> native binary
 ```
 
+## Dependencies
+
+One script prepares a fresh Debian machine: X11/GL/ALSA development headers
+via apt, then raylib itself cloned and built from source into `/usr/local`
+(Debian ships no usable raylib package):
+
+```sh
+./setup-deps.sh
+```
+
 ## Build & run a sketch
 
 ```sh
@@ -37,18 +47,25 @@ PDE_OPTS=-O2 ./run       # override fast -O0 default compile
 PDE_KEEP=1 ./run         # keep the tmp dir to inspect generated C
 ```
 
+## Testing against real-world corpora
+
+Two batch tools check every sketch directory under a tree (tabs merged
+exactly like `run`, `applet/` copies skipped by `corpus.sh`):
+
+```sh
+./wildtest ~/src/2021        # transpile + gcc syntax-check, PASS/FAIL tally
+./corpus.sh ../2010          # transpile + full gcc link, classified results
+```
+
+`wildtest` prints one line per sketch and a tally — quick pass-rate signal.
+`corpus.sh` classifies `PASS / TRANSPILE_ERR / COMPILE_ERR`, prints a
+failure-reason histogram, writes a TSV table to `corpus-results.txt` and
+supports A/B testing an alternative transpiler via `PDE2C=/path/to/pde2c`;
+`PDE_CORPUS_TRANSPILE_ONLY=1` skips the gcc stage.
+
 Syntax errors (unbalanced brackets) are caught before compilation with
 `file:line` messages pointing at your `.pde`; gcc errors on generated code are
 mapped back to the original source lines via `#line` directives.
-
-## Batch-testing real sketches
-
-```sh
-./wildtest ~/src/2021      # transpile + gcc syntax-check every sketch dir
-```
-
-Prints one line per sketch (PASS / TRANSPILE-ERR / COMPILE-ERR with the first
-error) and a tally — used to track how much of a real-world corpus runs.
 
 ## What works
 
@@ -70,8 +87,9 @@ error) and a tally — used to track how much of a real-world corpus runs.
   method-call rewriting (`v.add(w)` etc.)
 - **Sketch structure**: `settings()`, `setup()`, `draw()`, forward declarations
   generated automatically, heap arrays `new float[n]`, `boolean/color/String`
-  type mapping, `final` dropped
-- **Java-isms**: `import` lines dropped; Java-style arrays in both orders
+  type mapping, `final` dropped, Java `import`/`package` statements stripped
+  (mid-file safe)
+- **Java-isms**: Java-style arrays in both orders
   (`float[] a` and `float a[]`, incl. lists like `float a[], b;` and array
   parameters), `boolean[]` + `new boolean[n]`, trailing-array returns
   (`boolean sieve(int n)[]`), Java `%` stays int-preserving via `_Generic`,
@@ -86,14 +104,17 @@ error) and a tally — used to track how much of a real-world corpus runs.
   `PMatrix/getMatrix()/applyMatrix()` backed by raylib matrices
 
 Out of the ~20 real-world sketches in `~/src/2021` used as a test corpus, 9
-currently compile, link and run natively (`./wildtest ~/src/2021`). The rest
-are blocked by classes/inheritance or external libraries (oscP5, MidiBus,
-XML), or have broken sources.
+currently compile, link and run natively (`./wildtest ~/src/2021`). On the
+larger 2010 archive (151 sketches, `./corpus.sh ../2010`), 14 fully
+transpile and link; the dominant blockers there are external-library types
+(Minim, GL, OscP5, PeasyCam), user-defined classes (`ArrayList`, custom
+types) and non-constant global initializers.
 
 ## Not supported yet
 
 Classes and inheritance, `ArrayList` and collections, generics,
-`import`ed external libraries (OscP5, video, MidiBus),
+external libraries (`import` lines are stripped, but the library calls
+themselves do not link: OscP5, video, MidiBus),
 try/catch, most `String` methods beyond `charAt`,
 `curveVertex/bezierVertex` inside arbitrary paths,
 `loadStrings/loadImage` file IO.
