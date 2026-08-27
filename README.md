@@ -38,13 +38,15 @@ gcc mysketch.c -o mysketch -O2 -I. -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
 ```
 
 Or use the `run` wrapper, which does all of it in a temp dir and cleans up
-after the window closes:
+after the window closes. With no arguments it runs the sketch in the current
+directory — just `cd` into a sketch and `./run`:
 
 ```sh
 ./run                    # sketch in current directory (all .pde tabs together)
 ./run ~/path/to/sketch   # sketch elsewhere
 PDE_OPTS=-O2 ./run       # override fast -O0 default compile
 PDE_KEEP=1 ./run         # keep the tmp dir to inspect generated C
+PDE_NOPCH=1 ./run        # ignore the precompiled header (fallback)
 ```
 
 ## Testing against real-world corpora
@@ -62,6 +64,11 @@ exactly like `run`, `applet/` copies skipped by `corpus.sh`):
 failure-reason histogram, writes a TSV table to `corpus-results.txt` and
 supports A/B testing an alternative transpiler via `PDE2C=/path/to/pde2c`;
 `PDE_CORPUS_TRANSPILE_ONLY=1` skips the gcc stage.
+
+The one-shot turnaround is fast (~0.2s) thanks to a precompiled header
+(`processing.h.gch`) that `gcc` picks up automatically, so raylib's headers
+aren't re-parsed on every compile. It is rebuilt only when `processing.h`
+changes.
 
 Syntax errors (unbalanced brackets) are caught before compilation with
 `file:line` messages pointing at your `.pde`; gcc errors on generated code are

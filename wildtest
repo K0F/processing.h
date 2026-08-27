@@ -20,6 +20,11 @@ if [ "$SCRIPT_DIR/pde2c.c" -nt "$SCRIPT_DIR/pde2c" ] || [ ! -x "$SCRIPT_DIR/pde2
   gcc "$SCRIPT_DIR/pde2c.c" -o "$SCRIPT_DIR/pde2c" || exit 1
 fi
 
+# precompiled header (same -I flags as the per-sketch gcc calls below)
+if [ "$SCRIPT_DIR/processing.h" -nt "$SCRIPT_DIR/processing.h.gch" ] || [ ! -f "$SCRIPT_DIR/processing.h.gch" ]; then
+  gcc -I"$SCRIPT_DIR" -x c-header "$SCRIPT_DIR/processing.h" -o "$SCRIPT_DIR/processing.h.gch" || exit 1
+fi
+
 TMP=$(mktemp -d /tmp/pdewild.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
