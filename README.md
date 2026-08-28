@@ -142,17 +142,28 @@ mapped back to the original source lines via `#line` directives.
   LINES/POINTS)`),
   `PMatrix/getMatrix()/applyMatrix()` backed by raylib matrices
 
-Out of the ~20 real-world sketches in `~/src/2021` used as a test corpus, 9
+Out of the ~20 real-world sketches in `~/src/2021` used as a test corpus, 11
 currently compile, link and run natively (`./wildtest ~/src/2021`). On the
 larger 2010 archive (`./corpus.sh ../2010`), 16 of 151 sketches fully
 transpile and link (17/168 counting duplicate `applet/` copies via
 `./wildtest`); the dominant blockers there are external-library types
-(Minim, GL, OscP5, PeasyCam), user-defined classes (`ArrayList`, custom
-types) and non-constant global initializers.
+(Minim, GL, OscP5, PeasyCam), user-defined classes and `ArrayList` (now
+supported in the 2021-only transpiler — the 2010 snapshot predates it),
+and non-constant global initializers.
+
+Phase 6 added user-defined `class` support: `class Name { ... }` becomes a
+`typedef struct`, constructors emit `Name Name_ctor(args)` (named to avoid
+the Java clash), methods emit `Ret Name_meth(Name *self, ...)` with
+`this.`/bare-field refs rewritten to `self->`, field initializers assigned
+at ctor start, `new Name(...)`→`Name_ctor(...)`, and sketch-level
+`o.method(...)` receivers routed to the same function. In-memory
+`ArrayList` (`add`/`set`/`get`/`size`/`clear`/`remove`, `newArrayList()`)
+is provided via a `void *` array runtime with type-erased copy-on-add,
+including the `(Type)list.get(i)` cast-get idiom.
 
 ## Not supported yet
 
-Classes and inheritance, `ArrayList` and collections, generics,
+Inheritance, generics/type parameters,
 external libraries (`import` lines are stripped, but the library calls
 themselves do not link: OscP5, video, MidiBus),
 try/catch, most `String` methods beyond `charAt` / `split` (indexOf,

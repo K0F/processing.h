@@ -37,12 +37,19 @@ bool is_keyword(const char *str) {
 }
 
 // Helper to identify data types for array conversions
+// Users can call sketch functions before their definitions, so C needs
+// prototypes. Later passes (name collision, forward decl) reuse this.
+static bool is_class_name(const char *name);
+
 bool is_type_token(Token t) {
-  return (t.type == TOKEN_KEYWORD &&
-          (strcmp(t.text, "int") == 0 || strcmp(t.text, "float") == 0 ||
-           strcmp(t.text, "char") == 0 || strcmp(t.text, "double") == 0 ||
-           strcmp(t.text, "byte") == 0 ||
-           strcmp(t.text, "boolean") == 0 || strcmp(t.text, "color") == 0));
+  if (t.type == TOKEN_KEYWORD &&
+      (strcmp(t.text, "int") == 0 || strcmp(t.text, "float") == 0 ||
+       strcmp(t.text, "char") == 0 || strcmp(t.text, "double") == 0 ||
+       strcmp(t.text, "byte") == 0 ||
+       strcmp(t.text, "boolean") == 0 || strcmp(t.text, "color") == 0))
+    return true;
+  if (t.type == TOKEN_IDENTIFIER && is_class_name(t.text)) return true;
+  return false;
 }
 
 // Types that can start a user-defined function signature
@@ -332,6 +339,544 @@ int rewrite_concat(Token *tokens, int num_tokens, Token **out_tokens) {
   return o;
 }
 
+// ===========================================================================
+// User-defined classes (Phase 6)
+// ===========================================================================
+// Each Processing class becomes a plain-C struct plus receiver-prefixed free
+// functions. rewrite_classes() strips `class NAME { ... }` blocks out of the
+// main token stream (so the later forward-decl / name-collision passes never
+// see method bodies), routes `new Name(args)` -> `Name_ctor(args)`,
+// ArrayList member ops, `(Type)list.get(i)` casts and `obj.method(...)` calls
+// on class-typed variables, and records everything the two emission phases
+// (up-front typedefs + prototypes, post-sketch definitions) need. Class
+// method bodies are re-emitted with bare field identifiers rewritten to
+// `this->field` (or `this_.field` inside constructors).
+
+#define MAX_CLASSES 64
+#define MAX_FIELDS 64
+#define MAX_METHODS 64
+#define MAX_SYMBOLS 4096
+#define MAX_LOCALS 128
+
+typedef struct {
+  char name[MAX_TOKEN_TEXT];
+  char type[MAX_TOKEN_TEXT];       // mapped C type for the struct member
+  bool isPointer;                  // "float w[];" -> member `float *w;`
+  bool hasInit;
+  Token *init;                     // copy of the field-initializer tokens
+  int ninit;
+} ClassField;
+
+typedef struct {
+  char name[MAX_TOKEN_TEXT];
+  bool isCtor;
+  char ret[MAX_TOKEN_TEXT];        // mapped C return type
+  char params[2048];               // rendered "float a, int b" param list
+  int sigOpen, sigClose;           // token indexes of the parameter parens
+  int bodyOpen, bodyClose;         // token indexes of the '{ ... }' body
+  Token *body;                     // copy of the body tokens (excl. braces)
+  int nbody;
+  char locals[MAX_LOCALS][MAX_TOKEN_TEXT];
+  int nlocals;
+} ClassMethod;
+
+typedef struct {
+  char name[MAX_TOKEN_TEXT];
+  ClassField fields[MAX_FIELDS];
+  int nfields;
+  ClassMethod methods[MAX_METHODS];
+  int nmethods;
+  int ctorIdx;                     // -1 when no constructor was written
+  int classOpen, classClose;       // token indexes of '{ ... }'
+} ClassDef;
+
+static ClassDef _classes[MAX_CLASSES];
+static int _nclasses = 0;
+
+typedef struct { char name[MAX_TOKEN_TEXT]; char type[MAX_TOKEN_TEXT]; } Symbol;
+static Symbol _symtab[MAX_SYMBOLS];
+static int _nsym = 0;
+
+static int matching_close(Token *t, int n, int open, const char *os, const char *cs) {
+  int depth = 0;
+  for (int i = open; i < n; i++) {
+    if (t[i].type != TOKEN_SYMBOL) continue;
+    if (strcmp(t[i].text, os) == 0) depth++;
+    else if (strcmp(t[i].text, cs) == 0) {
+      if (--depth == 0) return i;
+    }
+  }
+  return -1;
+}
+
+static bool is_class_name(const char *name) {
+  for (int i = 0; i < _nclasses; i++)
+    if (strcmp(_classes[i].name, name) == 0) return true;
+  return false;
+}
+
+static bool class_has_method(const char *cls, const char *meth) {
+  for (int i = 0; i < _nclasses; i++) {
+    if (strcmp(_classes[i].name, cls) != 0) continue;
+    for (int m = 0; m < _classes[i].nmethods; m++)
+      if (!_classes[i].methods[m].isCtor &&
+          strcmp(_classes[i].methods[m].name, meth) == 0) return true;
+  }
+  return false;
+}
+
+static bool is_ag_method(const char *name) {
+  return strcmp(name, "add") == 0 || strcmp(name, "get") == 0 ||
+         strcmp(name, "size") == 0 || strcmp(name, "set") == 0 ||
+         strcmp(name, "remove") == 0 || strcmp(name, "clear") == 0;
+}
+
+static bool is_plausible_type_token(Token t) {
+  if (t.type == TOKEN_KEYWORD) {
+    return strcmp(t.text, "int") == 0 || strcmp(t.text, "float") == 0 ||
+           strcmp(t.text, "boolean") == 0 || strcmp(t.text, "color") == 0 ||
+           strcmp(t.text, "char") == 0 || strcmp(t.text, "double") == 0 ||
+           strcmp(t.text, "byte") == 0 || strcmp(t.text, "void") == 0;
+  }
+  if (t.type != TOKEN_IDENTIFIER) return false;
+  if (strcmp(t.text, "PVector") == 0 || strcmp(t.text, "String") == 0 ||
+      strcmp(t.text, "ArrayList") == 0 || strcmp(t.text, "PImage") == 0)
+    return true;
+  return is_class_name(t.text);
+}
+
+static void reg_sym_typed(const char *name, const char *type) {
+  if (_nsym >= MAX_SYMBOLS) return;
+  for (int i = 0; i < _nsym; i++) {
+    if (strcmp(_symtab[i].name, name) == 0) {
+      strncpy(_symtab[i].type, type, MAX_TOKEN_TEXT - 1);
+      return;
+    }
+  }
+  snprintf(_symtab[_nsym].name, MAX_TOKEN_TEXT, "%s", name);
+  snprintf(_symtab[_nsym].type, MAX_TOKEN_TEXT, "%s", type);
+  _nsym++;
+}
+
+static const char *symbol_type(const char *name) {
+  for (int i = 0; i < _nsym; i++)
+    if (strcmp(_symtab[i].name, name) == 0) return _symtab[i].type;
+  return NULL;
+}
+
+// Parse `TYPE [flags] name` declarations inside a method body (params and
+// top-level-ish locals/loop vars) and record their names+types.
+static void collect_locals(Token *t, int start, int end, ClassMethod *m) {
+  for (int i = start; i < end && i + 1 < end; i++) {
+    if (!is_plausible_type_token(t[i])) continue;
+    if (i + 2 < end && t[i + 1].type == TOKEN_SYMBOL &&
+        strcmp(t[i + 1].text, "[") == 0 && t[i + 2].type == TOKEN_SYMBOL &&
+        strcmp(t[i + 2].text, "]") == 0) i += 2;
+    int j = i + 1;
+    if (j >= end || t[j].type != TOKEN_IDENTIFIER) continue;
+    if (j + 1 < end && ((t[j + 1].type == TOKEN_SYMBOL &&
+                         strcmp(t[j + 1].text, "(") == 0) ||
+                        (t[j + 1].type == TOKEN_DOT)))
+      continue; // it's a call or member chain, not a declaration
+    if (m->nlocals < MAX_LOCALS)
+      snprintf(m->locals[m->nlocals++], MAX_TOKEN_TEXT, "%s", t[j].text);
+    char mtype[MAX_TOKEN_TEXT];
+    snprintf(mtype, sizeof(mtype), "%s", emit_c_type_str(t[i].text));
+    reg_sym_typed(t[j].text, mtype);
+    i = j;
+  }
+}
+
+// Parse the parameter list between sigOpen and sigClose, register the
+// PARAMETER NAMES (so the this-> rewrite does not touch them) and render the
+// C parameter list into m->params.
+static void parse_params(Token *t, int n, int sigOpen, int sigClose, ClassMethod *m) {
+  size_t used = 0;
+  m->params[0] = '\0';
+  int i = sigOpen + 1;
+  while (i < sigClose) {
+    if (i >= n) break;
+    char tymap[MAX_TOKEN_TEXT];
+    snprintf(tymap, sizeof(tymap), "%s", emit_c_type_str(t[i].text));
+    i++;
+    bool arr = false;
+    if (i + 1 < sigClose && strcmp(t[i].text, "[") == 0 &&
+        strcmp(t[i + 1].text, "]") == 0) { arr = true; i += 2; }
+    if (i < sigClose && t[i].type == TOKEN_IDENTIFIER) {
+      if (m->nlocals < MAX_LOCALS)
+        snprintf(m->locals[m->nlocals++], MAX_TOKEN_TEXT, "%s", t[i].text);
+      char ptype[MAX_TOKEN_TEXT];
+      snprintf(ptype, sizeof(ptype), "%s%s", tymap, arr ? " *" : "");
+      reg_sym_typed(t[i].text, ptype);
+      size_t wrote = snprintf(m->params + used, sizeof(m->params) - used,
+                              "%s%s%s%s", used ? ", " : "",
+                              ptype, ptype[strlen(ptype)-1]=='*' ? "" : " ", t[i].text);
+      used += (wrote < sizeof(m->params) - used) ? wrote : 0;
+      i++;
+      if (i < sigClose && strcmp(t[i].text, "[") == 0) {
+        if (i + 1 < sigClose && strcmp(t[i + 1].text, "]") == 0) i += 2;
+      }
+    }
+    if (i < sigClose && strcmp(t[i].text, ",") == 0) i++;
+  }
+}
+
+// Parse one `class NAME { ... }` starting at the "class" keyword token `kw`.
+// Called once per class before any token rewriting so _classes is complete.
+static void parse_class(Token *t, int n, int kw) {
+  ClassDef *c = &_classes[_nclasses++];
+  c->nfields = 0;
+  c->nmethods = 0;
+  c->ctorIdx = -1;
+  snprintf(c->name, MAX_TOKEN_TEXT, "%s", t[kw + 1].text);
+
+  int p = kw + 2;
+  while (p < n && !(t[p].type == TOKEN_SYMBOL && strcmp(t[p].text, "{") == 0)) p++;
+  c->classOpen = p;
+  c->classClose = matching_close(t, n, p, "{", "}");
+  if (c->classClose < 0) { c->classClose = p + 1; return; }
+
+  int m = p + 1;
+  while (m < c->classClose) {
+    Token tk = t[m];
+    if (tk.type == TOKEN_SYMBOL && strcmp(tk.text, ";") == 0) { m++; continue; }
+    if (tk.type == TOKEN_IDENTIFIER && strcmp(tk.text, "static") == 0) { m++; continue; }
+
+    // constructor: NAME-of-class '(' or method: TYPE NAME '(' / TYPE[] NAME '('
+    bool isCtor = (tk.type == TOKEN_IDENTIFIER && strcmp(tk.text, c->name) == 0 &&
+                   m + 1 < c->classClose && t[m + 1].type == TOKEN_SYMBOL &&
+                   strcmp(t[m + 1].text, "(") == 0);
+    int nameTok = -1;
+    int typeTok = m;
+    if (!isCtor && is_plausible_type_token(tk) && m + 1 < c->classClose) {
+      int j = m + 1;
+      if (j + 1 < c->classClose && strcmp(t[j].text, "[") == 0 &&
+          strcmp(t[j + 1].text, "]") == 0) j += 2;
+      if (j < c->classClose && t[j].type == TOKEN_IDENTIFIER &&
+          j + 1 < c->classClose && t[j + 1].type == TOKEN_SYMBOL &&
+          strcmp(t[j + 1].text, "(") == 0) {
+        nameTok = j;
+      }
+    }
+    if (isCtor || nameTok >= 0) {
+      if (c->nmethods >= MAX_METHODS) break;
+      ClassMethod *meth = &c->methods[c->nmethods];
+      memset(meth, 0, sizeof(*meth));
+      meth->isCtor = isCtor;
+      meth->nlocals = 0;
+      int openIdx = isCtor ? m + 1 : nameTok + 1;
+      if (isCtor) {
+        snprintf(meth->name, MAX_TOKEN_TEXT, "%s", c->name);
+        snprintf(meth->ret, MAX_TOKEN_TEXT, "%s", c->name);
+        c->ctorIdx = c->nmethods;
+      } else {
+        snprintf(meth->name, MAX_TOKEN_TEXT, "%s", t[nameTok].text);
+        snprintf(meth->ret, MAX_TOKEN_TEXT, "%s", emit_c_type_str(t[typeTok].text));
+      }
+      meth->sigOpen = openIdx;
+      meth->sigClose = matching_close(t, n, openIdx, "(", ")");
+      if (meth->sigClose < 0) { meth->sigClose = openIdx; }
+      int bo = meth->sigClose + 1;
+      // skip a trailing array return marker "[]" for "T f(...)[] {"
+      if (bo + 1 < c->classClose && strcmp(t[bo].text, "[") == 0 &&
+          strcmp(t[bo + 1].text, "]") == 0) bo += 2;
+      if (bo < c->classClose && t[bo].type == TOKEN_SYMBOL &&
+          strcmp(t[bo].text, "{") == 0) {
+        meth->bodyOpen = bo;
+        meth->bodyClose = matching_close(t, n, bo, "{", "}");
+        if (meth->bodyClose < 0) meth->bodyClose = bo;
+        parse_params(t, n, meth->sigOpen, meth->sigClose, meth);
+        collect_locals(t, meth->bodyOpen + 1, meth->bodyClose, meth);
+      } else {
+        meth->bodyOpen = bo;
+        meth->bodyClose = bo;
+      }
+      meth->nbody = meth->bodyClose - meth->bodyOpen - 1;
+      if (meth->nbody > 0) {
+        meth->body = malloc(sizeof(Token) * (size_t)meth->nbody);
+        memcpy(meth->body, &t[meth->bodyOpen + 1], sizeof(Token) * (size_t)meth->nbody);
+      } else {
+        meth->body = NULL;
+      }
+      c->nmethods++;
+      m = meth->bodyClose + 1;
+      continue;
+    }
+
+    // otherwise: a field declaration TYPE NAME... (only entered when the token
+    // actually looks like a type: otherwise skip it as a stray/operator)
+    if (!is_plausible_type_token(tk)) { m++; continue; }
+    const char *ftype = emit_c_type_str(tk.text);
+    int k = m + 1;
+    bool any = false;
+    for (;;) {
+      bool arr = false;
+      if (k + 1 < c->classClose && t[k].type == TOKEN_SYMBOL &&
+          strcmp(t[k].text, "[") == 0 && t[k + 1].type == TOKEN_SYMBOL &&
+          strcmp(t[k + 1].text, "]") == 0) { arr = true; k += 2; }
+      if (k >= c->classClose || t[k].type != TOKEN_IDENTIFIER) break;
+      if (c->nfields >= MAX_FIELDS) break;
+      ClassField *f = &c->fields[c->nfields];
+      snprintf(f->name, MAX_TOKEN_TEXT, "%s", t[k].text);
+      snprintf(f->type, MAX_TOKEN_TEXT, "%s", ftype);
+      f->isPointer = arr;
+      f->hasInit = false;
+      f->init = NULL;
+      f->ninit = 0;
+      char mtype[MAX_TOKEN_TEXT];
+      snprintf(mtype, sizeof(mtype), "%s%s", ftype, arr ? " *" : "");
+      reg_sym_typed(f->name, mtype);
+      c->nfields++;
+      any = true;
+      k++;
+      if (k + 1 < c->classClose && t[k].type == TOKEN_SYMBOL &&
+          strcmp(t[k].text, "[") == 0 && t[k + 1].type == TOKEN_SYMBOL &&
+          strcmp(t[k + 1].text, "]") == 0) { f->isPointer = true; k += 2; }
+      if (k < c->classClose && t[k].type == TOKEN_OPERATOR &&
+          strcmp(t[k].text, "=") == 0) {
+        f->hasInit = true;
+        int s = k + 1, e = s, depth = 0;
+        while (e < c->classClose) {
+          if (t[e].type == TOKEN_SYMBOL) {
+            if (strcmp(t[e].text, "(") == 0 || strcmp(t[e].text, "[") == 0) depth++;
+            else if (strcmp(t[e].text, ")") == 0 || strcmp(t[e].text, "]") == 0) {
+              if (depth == 0) break;
+              depth--;
+            } else if (depth == 0 &&
+                       (strcmp(t[e].text, ";") == 0 || strcmp(t[e].text, ",") == 0)) break;
+          }
+          e++;
+        }
+        f->ninit = e - s;
+        if (f->ninit > 0) {
+          f->init = malloc(sizeof(Token) * (size_t)f->ninit);
+          memcpy(f->init, &t[s], sizeof(Token) * (size_t)f->ninit);
+        }
+        k = e;
+      }
+      if (k < c->classClose && t[k].type == TOKEN_SYMBOL &&
+          strcmp(t[k].text, ",") == 0) { k++; continue; }
+      break;
+    }
+    if (!any) { m++; continue; } // malformed; skip one token
+    if (k < c->classClose && strcmp(t[k].text, ";") == 0) k++;
+    m = k;
+  }
+
+  // default constructor when none written (so `new Foo();` always links)
+  if (c->ctorIdx < 0 && c->nmethods < MAX_METHODS) {
+    ClassMethod *meth = &c->methods[c->nmethods];
+    memset(meth, 0, sizeof(*meth));
+    meth->isCtor = true;
+    meth->nlocals = 0;
+    snprintf(meth->name, MAX_TOKEN_TEXT, "%s", c->name);
+    snprintf(meth->ret, MAX_TOKEN_TEXT, "%s", c->name);
+    snprintf(meth->params, sizeof(meth->params), "void");
+    meth->sigOpen = meth->sigClose = c->classOpen;
+    meth->bodyOpen = meth->bodyClose = c->classOpen + 1;
+    c->ctorIdx = c->nmethods;
+    c->nmethods++;
+  }
+}
+
+// First pass: parse every class in file order (no token mutation).
+static void scan_classes(Token *t, int n) {
+  for (int i = 0; i < n; i++) {
+    if (t[i].type != TOKEN_IDENTIFIER || strcmp(t[i].text, "class") != 0) continue;
+    if (i + 1 >= n || t[i + 1].type != TOKEN_IDENTIFIER) continue;
+    parse_class(t, n, i);
+    i = _classes[_nclasses - 1].classClose;
+  }
+}
+
+// Second pass: top-level (brace-depth 0) variable declarations are globals.
+static char _globnames[MAX_SYMBOLS][MAX_TOKEN_TEXT];
+static int _nglob = 0;
+
+static bool is_global_name(const char *name) {
+  for (int i = 0; i < _nglob; i++)
+    if (strcmp(_globnames[i], name) == 0) return true;
+  return false;
+}
+
+static void scan_globals(Token *t, int n) {
+  int depth = 0;
+  for (int i = 0; i + 1 < n; i++) {
+    Token tk = t[i];
+    if (tk.type == TOKEN_KEYWORD && strcmp(tk.text, "void") == 0 &&
+        i + 1 < n && t[i + 1].type == TOKEN_IDENTIFIER &&
+        i + 2 < n && t[i + 2].type == TOKEN_SYMBOL &&
+        strcmp(t[i + 2].text, "(") == 0) {
+      // a function definition; skip through its matching '{ ... }' body so
+      // locals are never mistaken for globals
+      int j = i + 2, d = 0, close = -1;
+      for (; j < n; j++) {
+        if (t[j].text[0] == '(') d++;
+        else if (t[j].text[0] == ')') { if (--d == 0) { close = j; break; } }
+      }
+      int k = close + 1;
+      while (k < n && t[k].text[0] != '{') k++;
+      if (k < n) {
+        int bc = matching_close(t, n, k, "{", "}");
+        i = (bc > k) ? bc : k;
+      }
+      continue;
+    }
+    if (tk.type == TOKEN_SYMBOL) {
+      if (strcmp(tk.text, "{") == 0) depth++;
+      else if (strcmp(tk.text, "}") == 0) { if (depth > 0) depth--; }
+      else if (depth == 0)
+        continue;
+      continue;
+    }
+    if (depth != 0) continue;
+    if (i == 0) continue;
+    if (t[i - 1].type == TOKEN_IDENTIFIER && strcmp(t[i - 1].text, "class") == 0) continue;
+    if (!is_plausible_type_token(tk)) continue;
+    int j = i + 1;
+    if (j + 1 < n && t[j].type == TOKEN_SYMBOL && strcmp(t[j].text, "[") == 0 &&
+        t[j + 1].type == TOKEN_SYMBOL && strcmp(t[j + 1].text, "]") == 0) j += 2;
+    if (t[j].type != TOKEN_IDENTIFIER) continue;
+    if (j + 1 < n && t[j + 1].type == TOKEN_SYMBOL && strcmp(t[j + 1].text, "(") == 0) continue;
+    if (j + 1 < n && t[j + 1].type == TOKEN_SYMBOL && strcmp(t[j + 1].text, "{") == 0) continue;
+    char gtype[MAX_TOKEN_TEXT];
+    snprintf(gtype, sizeof(gtype), "%s", emit_c_type_str(tk.text));
+    reg_sym_typed(t[j].text, gtype);
+    if (_nglob < MAX_SYMBOLS)
+      snprintf(_globnames[_nglob++], MAX_TOKEN_TEXT, "%s", t[j].text);
+  }
+}
+
+// Third pass: strip class bodies; route new/casts/member-calls. Runs BEFORE
+// the forward-declaration and name-collision passes so method bodies never
+// reach them as phase-1 function definitions.
+int rewrite_classes(Token *t, int n, Token **out_tokens) {
+  _nclasses = 0;
+  _nsym = 0;
+  _nglob = 0;
+  scan_classes(t, n);
+  scan_globals(t, n);
+
+  Token *out = malloc(sizeof(Token) * (n * 2 + 4096));
+  if (!out) { *out_tokens = t; return n; }
+  int o = 0;
+
+  for (int i = 0; i < n; i++) {
+    Token cur = t[i];
+
+    // strip a whole class block (do not emit any of its tokens)
+    if (cur.type == TOKEN_IDENTIFIER && strcmp(cur.text, "class") == 0) {
+      int close = -1;
+      for (int c2 = _nclasses - 1; c2 >= 0; c2--) {
+        if (strcmp(_classes[c2].name, t[i + 1].text) == 0 && _classes[c2].classOpen > i) {
+          close = _classes[c2].classClose;
+          break;
+        }
+      }
+      if (close >= 0) { i = close; continue; }
+      out[o++] = cur;
+      continue;
+    }
+
+    // `new ClassName(args)` -> `ClassName_ctor(args)`
+    if (cur.type == TOKEN_IDENTIFIER && strcmp(cur.text, "new") == 0 &&
+        i + 2 < n && t[i + 1].type == TOKEN_IDENTIFIER &&
+        is_class_name(t[i + 1].text) &&
+        t[i + 2].type == TOKEN_SYMBOL && strcmp(t[i + 2].text, "(") == 0) {
+      Token alias = cur;
+      snprintf(alias.text, MAX_TOKEN_TEXT, "%s_ctor", t[i + 1].text);
+      out[o++] = alias;
+      i += 1;
+      continue;
+    }
+
+    // `new ArrayList([<Gen>])` -> `_pde_ag_new()`
+    if (cur.type == TOKEN_IDENTIFIER && strcmp(cur.text, "new") == 0 &&
+        i + 2 < n && t[i + 1].type == TOKEN_IDENTIFIER &&
+        strcmp(t[i + 1].text, "ArrayList") == 0) {
+      int j = i + 2;
+      if (j < n && t[j].type == TOKEN_SYMBOL && strcmp(t[j].text, "<") == 0) {
+        int d = 1;
+        while (j < n && d > 0) {
+          if (t[j].type == TOKEN_SYMBOL && strcmp(t[j].text, "<") == 0) d++;
+          else if (t[j].type == TOKEN_SYMBOL && strcmp(t[j].text, ">") == 0) d--;
+          j++;
+        }
+      }
+      if (j < n && t[j].type == TOKEN_SYMBOL && strcmp(t[j].text, "(") == 0) {
+        Token alias = cur;
+        snprintf(alias.text, MAX_TOKEN_TEXT, "_pde_ag_new");
+        out[o++] = alias;
+        i = j - 1;
+        continue;
+      }
+    }
+
+    // `(Type) list.get(i)` -> `*(Type *) _pde_ag_get(list, i)`
+    if (cur.type == TOKEN_SYMBOL && strcmp(cur.text, "(") == 0 &&
+        i + 6 < n && t[i + 1].type == TOKEN_IDENTIFIER &&
+        is_plausible_type_token(t[i + 1]) &&
+        t[i + 2].type == TOKEN_SYMBOL && strcmp(t[i + 2].text, ")") == 0 &&
+        t[i + 3].type == TOKEN_IDENTIFIER) {
+      const char *xty = symbol_type(t[i + 3].text);
+      if (xty && strcmp(xty, "ArrayList") == 0 &&
+          t[i + 4].type == TOKEN_DOT &&
+          t[i + 5].type == TOKEN_IDENTIFIER && strcmp(t[i + 5].text, "get") == 0 &&
+          t[i + 6].type == TOKEN_SYMBOL && strcmp(t[i + 6].text, "(") == 0) {
+        Token op = cur; strcpy(op.text, "*"); op.type = TOKEN_OPERATOR; out[o++] = op;
+        Token lp = cur; strcpy(lp.text, "("); out[o++] = lp;
+        Token ty = t[i + 1];
+        snprintf(ty.text, MAX_TOKEN_TEXT, "%s *", emit_c_type_str(t[i + 1].text));
+        out[o++] = ty;
+        Token rp = cur; strcpy(rp.text, ")"); out[o++] = rp;
+        Token fn = cur; snprintf(fn.text, MAX_TOKEN_TEXT, "_pde_ag_get"); out[o++] = fn;
+        Token ol = cur; strcpy(ol.text, "("); out[o++] = ol;
+        out[o++] = t[i + 3];
+        Token cm = cur; strcpy(cm.text, ","); out[o++] = cm;
+        i = i + 6; // resume at the argument after "get("
+        continue;
+      }
+    }
+
+    // member-call routing on typed receivers (skip chains: `a.b.meth(`
+    // routes only when `b` is itself a standalone typed variable)
+    if ((i == 0 || t[i - 1].type != TOKEN_DOT) &&
+        cur.type == TOKEN_IDENTIFIER && i + 3 < n &&
+        t[i + 1].type == TOKEN_DOT && t[i + 2].type == TOKEN_IDENTIFIER &&
+        t[i + 3].type == TOKEN_SYMBOL && strcmp(t[i + 3].text, "(") == 0) {
+      const char *ty = symbol_type(cur.text);
+      const char *mn = t[i + 2].text;
+      bool noArg = (i + 4 < n && t[i + 4].type == TOKEN_SYMBOL &&
+                    strcmp(t[i + 4].text, ")") == 0);
+      if (ty && strcmp(ty, "ArrayList") == 0 && is_ag_method(mn)) {
+        Token fn = cur;
+        snprintf(fn.text, MAX_TOKEN_TEXT, "_pde_ag_%s", mn);
+        out[o++] = fn;
+        Token ol = cur; strcpy(ol.text, "("); out[o++] = ol;
+        out[o++] = cur; // receiver
+        if (!noArg) { Token cm = cur; strcpy(cm.text, ","); out[o++] = cm; }
+        i += 3;
+        continue;
+      }
+      if (ty && is_class_name(ty) && class_has_method(ty, mn)) {
+        Token fn = cur;
+        snprintf(fn.text, MAX_TOKEN_TEXT, "%s_%s", ty, mn);
+        out[o++] = fn;
+        Token ol = cur; strcpy(ol.text, "("); out[o++] = ol;
+        Token amp = cur; strcpy(amp.text, "&"); amp.type = TOKEN_OPERATOR; out[o++] = amp;
+        out[o++] = cur; // receiver
+        if (!noArg) { Token cm = cur; strcpy(cm.text, ","); out[o++] = cm; }
+        i += 3;
+        continue;
+      }
+    }
+
+    out[o++] = cur;
+  }
+  *out_tokens = out;
+  return o;
+}
+
 // PVector methods that reassign the receiver: v.add(w) -> v = pvector_add(v, w)
 bool pvector_mutator_method(const char *name) {
   static const char *mutators[] = { "add", "sub", "mult", "div",
@@ -376,6 +921,262 @@ int count_call_args(Token *tokens, int num_tokens, int open, int *close_out) {
   }
   *close_out = -1;
   return -1;
+}
+
+// ===========================================================================
+// User-defined class emission (Phase 6)
+// ===========================================================================
+// Class method bodies are emitted from the token copies recorded during
+// parse_class. Bare field identifiers become `self->field`, receiverless own
+// method calls become `Class_method(self, ...)`, `this.x` becomes
+// `self->x`, and PVector / ArrayList / user-class member calls on fields (or
+// typed locals/globals) are routed to the same helpers the sketch-level loop
+// uses. Constructors build a stack struct, run field initializers, then the
+// body, and return it by value.
+
+static const char *field_type_of(const ClassDef *c, const char *name) {
+  for (int i = 0; i < c->nfields; i++)
+    if (strcmp(c->fields[i].name, name) == 0) return c->fields[i].type;
+  return NULL;
+}
+
+static bool is_field_of(const ClassDef *c, const char *name) {
+  return field_type_of(c, name) != NULL;
+}
+
+static bool is_class_method_name(const ClassDef *c, const char *name) {
+  for (int i = 0; i < c->nmethods; i++)
+    if (!c->methods[i].isCtor && strcmp(c->methods[i].name, name) == 0) return true;
+  return false;
+}
+
+static void class_recv(const ClassDef *c, const char *subj, char *out, size_t sz) {
+  if (is_field_of(c, subj)) snprintf(out, sz, "self->%s", subj);
+  else snprintf(out, sz, "%s", subj);
+}
+
+// Trailing spacing after a printed raw token (mirrors the sketch-body loop:
+// operator/comma get a space, ';' a newline, otherwise a space unless the
+// next token is a dot or symbol).
+static void class_sp(Token cur, bool hasNext, Token next) {
+  if (cur.type == TOKEN_SYMBOL && strcmp(cur.text, ";") == 0) { printf("\n"); return; }
+  if (cur.type == TOKEN_OPERATOR ||
+      (cur.type == TOKEN_SYMBOL && strcmp(cur.text, ",") == 0)) { printf(" "); return; }
+  if (hasNext && next.type != TOKEN_DOT && next.type != TOKEN_SYMBOL && cur.type != TOKEN_DOT)
+    printf(" ");
+}
+
+// Trailing spacing after a SYNTHESIZED identifier (self->x, pvector, ...).
+static void synth_sp(Token *t, int n, int nextIdx) {
+  if (nextIdx < n && t[nextIdx].type != TOKEN_DOT && t[nextIdx].type != TOKEN_SYMBOL)
+    printf(" ");
+}
+
+static void emit_class_body(const ClassDef *c, const ClassMethod *m, Token *t, int n) {
+  for (int i = 0; i < n; i++) {
+    Token tk = t[i];
+
+    // this.x -> self->x  (also `this.i` inside a ctor with a shadowing param)
+    if (tk.type == TOKEN_IDENTIFIER && strcmp(tk.text, "this") == 0 &&
+        i + 2 < n && t[i + 1].type == TOKEN_DOT && t[i + 2].type == TOKEN_IDENTIFIER) {
+      printf("self->%s", t[i + 2].text);
+      i += 2;
+      continue;
+    }
+
+    // `new` forms
+    if (tk.type == TOKEN_IDENTIFIER && strcmp(tk.text, "new") == 0) {
+      if (i + 2 < n && t[i + 1].type == TOKEN_IDENTIFIER &&
+          strcmp(t[i + 1].text, "PVector") == 0 &&
+          t[i + 2].type == TOKEN_SYMBOL && strcmp(t[i + 2].text, "(") == 0) {
+        printf("pvector");
+        synth_sp(t, n, i + 2);
+        i += 1;
+        continue;
+      }
+      if (i + 2 < n && t[i + 1].type == TOKEN_IDENTIFIER &&
+          is_class_name(t[i + 1].text) &&
+          t[i + 2].type == TOKEN_SYMBOL && strcmp(t[i + 2].text, "(") == 0) {
+        printf("%s_ctor", t[i + 1].text);
+        synth_sp(t, n, i + 2);
+        i += 1;
+        continue;
+      }
+      if (i + 1 < n && t[i + 1].type == TOKEN_IDENTIFIER &&
+          strcmp(t[i + 1].text, "ArrayList") == 0) {
+        int lp = i + 2;
+        if (lp < n && t[lp].type == TOKEN_SYMBOL && strcmp(t[lp].text, "<") == 0) {
+          int d = 1;
+          while (lp < n && d > 0) {
+            if (t[lp].type == TOKEN_SYMBOL && strcmp(t[lp].text, "<") == 0) d++;
+            else if (t[lp].type == TOKEN_SYMBOL && strcmp(t[lp].text, ">") == 0) d--;
+            lp++;
+          }
+        }
+        if (lp < n && t[lp].type == TOKEN_SYMBOL && strcmp(t[lp].text, "(") == 0) {
+          printf("_pde_ag_new");
+          synth_sp(t, n, lp);
+          i = lp - 1;
+          continue;
+        }
+      }
+    }
+
+    // `(Type) name.get(i)` ArrayList cast-deref
+    if (tk.type == TOKEN_SYMBOL && strcmp(tk.text, "(") == 0 &&
+        i + 6 < n && t[i + 1].type == TOKEN_IDENTIFIER &&
+        is_plausible_type_token(t[i + 1]) &&
+        t[i + 2].type == TOKEN_SYMBOL && strcmp(t[i + 2].text, ")") == 0 &&
+        t[i + 3].type == TOKEN_IDENTIFIER && t[i + 4].type == TOKEN_DOT &&
+        t[i + 5].type == TOKEN_IDENTIFIER && strcmp(t[i + 5].text, "get") == 0 &&
+        t[i + 6].type == TOKEN_SYMBOL && strcmp(t[i + 6].text, "(") == 0) {
+      const char *subj = t[i + 3].text;
+      const char *ft = is_field_of(c, subj) ? field_type_of(c, subj) : symbol_type(subj);
+      if (ft && strcmp(ft, "ArrayList") == 0) {
+        char recv[MAX_TOKEN_TEXT + 8];
+        class_recv(c, subj, recv, sizeof(recv));
+        printf("*(%s *) _pde_ag_get(%s, ", emit_c_type_str(t[i + 1].text), recv);
+        i += 6;
+        continue;
+      }
+    }
+
+    // member call on a PVector / user-class / ArrayList receiver
+    if (tk.type == TOKEN_IDENTIFIER && i + 3 < n &&
+        t[i + 1].type == TOKEN_DOT && t[i + 2].type == TOKEN_IDENTIFIER &&
+        t[i + 3].type == TOKEN_SYMBOL && strcmp(t[i + 3].text, "(") == 0) {
+      const char *subj = tk.text;
+      const char *meth = t[i + 2].text;
+      bool zeroArg = (i + 4 < n && t[i + 4].type == TOKEN_SYMBOL &&
+                      strcmp(t[i + 4].text, ")") == 0);
+      const char *ft = is_field_of(c, subj) ? field_type_of(c, subj) : symbol_type(subj);
+      if (ft && strcmp(ft, "PVector") == 0 &&
+          (pvector_mutator_method(meth) || pvector_accessor_method(meth))) {
+        char recv[MAX_TOKEN_TEXT + 8];
+        class_recv(c, subj, recv, sizeof(recv));
+        if (pvector_mutator_method(meth))
+          printf("%s = pvector_%s(%s%s", recv, meth, recv, zeroArg ? "" : ", ");
+        else
+          printf("pvector_%s(%s%s", meth, recv, zeroArg ? "" : ", ");
+        i += 3;
+        continue;
+      }
+      if (ft && strcmp(ft, "ArrayList") == 0 && is_ag_method(meth)) {
+        char recv[MAX_TOKEN_TEXT + 8];
+        class_recv(c, subj, recv, sizeof(recv));
+        printf("_pde_ag_%s(%s%s", meth, recv, zeroArg ? "" : ", ");
+        i += 3;
+        continue;
+      }
+      if (ft && is_class_name(ft) && class_has_method(ft, meth)) {
+        char recv[MAX_TOKEN_TEXT + 8];
+        class_recv(c, subj, recv, sizeof(recv));
+        printf("%s_%s(%s%s", ft, meth, recv, zeroArg ? "" : ", ");
+        i += 3;
+        continue;
+      }
+    }
+
+    // `name . length` (no parens) -> _pde_len(recv)
+    if (tk.type == TOKEN_IDENTIFIER && i + 2 < n &&
+        t[i + 1].type == TOKEN_DOT && t[i + 2].type == TOKEN_IDENTIFIER &&
+        strcmp(t[i + 2].text, "length") == 0 &&
+        !(i + 3 < n && t[i + 3].type == TOKEN_SYMBOL && strcmp(t[i + 3].text, "(") == 0)) {
+      char recv[MAX_TOKEN_TEXT + 8];
+      class_recv(c, tk.text, recv, sizeof(recv));
+      printf("_pde_len(%s)", recv);
+      i += 2;
+      continue;
+    }
+
+    // receiverless call to an own method: meth(args) -> Class_meth(self, args)
+    if (tk.type == TOKEN_IDENTIFIER && i + 1 < n &&
+        (i == 0 || t[i - 1].type != TOKEN_DOT) &&
+        t[i + 1].type == TOKEN_SYMBOL && strcmp(t[i + 1].text, "(") == 0 &&
+        is_class_method_name(c, tk.text)) {
+      bool zeroArg = (i + 2 < n && t[i + 2].type == TOKEN_SYMBOL &&
+                      strcmp(t[i + 2].text, ")") == 0);
+      printf("%s_%s(self%s", c->name, tk.text, zeroArg ? "" : ", ");
+      i += 1;
+      continue;
+    }
+
+    // bare field use -> self->field (unless shadowed by a local/param/global
+    // or it is actually a call to a same-named method, handled above)
+    if (tk.type == TOKEN_IDENTIFIER && is_field_of(c, tk.text)) {
+      bool shadowed = false;
+      if (m) for (int k = 0; k < m->nlocals; k++)
+        if (strcmp(m->locals[k], tk.text) == 0) { shadowed = true; break; }
+      if (!shadowed && !is_global_name(tk.text)) {
+        bool callAhead = (i + 1 < n && t[i + 1].type == TOKEN_SYMBOL &&
+                          strcmp(t[i + 1].text, "(") == 0);
+        if (!callAhead) {
+          printf("self->%s", tk.text);
+          synth_sp(t, n, i + 1);
+          continue;
+        }
+      }
+    }
+
+    printf("%s", tk.text);
+    class_sp(tk, i + 1 < n, i + 1 < n ? t[i + 1] : tk);
+  }
+}
+
+static void emit_class_typedefs_and_protos(void) {
+  for (int i = 0; i < _nclasses; i++) {
+    const ClassDef *c = &_classes[i];
+    printf("typedef struct {\n");
+    if (c->nfields == 0) {
+      printf("  char _pde_unused;\n");
+    } else {
+      for (int f = 0; f < c->nfields; f++) {
+        const ClassField *fl = &c->fields[f];
+        printf("  %s%s %s;\n", fl->type, fl->isPointer ? " *" : "", fl->name);
+      }
+    }
+    printf("} %s;\n\n", c->name);
+    for (int mi = 0; mi < c->nmethods; mi++) {
+      const ClassMethod *mm = &c->methods[mi];
+      if (mm->isCtor) {
+        printf("%s %s_ctor(%s);\n", c->name, c->name,
+               mm->params[0] ? mm->params : "void");
+      } else {
+        printf("%s %s_%s(%s *self%s%s);\n", mm->ret, c->name, mm->name, c->name,
+               mm->params[0] ? ", " : "", mm->params[0] ? mm->params : "");
+      }
+    }
+    printf("\n");
+  }
+}
+
+static void emit_class_definitions(void) {
+  for (int i = 0; i < _nclasses; i++) {
+    const ClassDef *c = &_classes[i];
+    for (int mi = 0; mi < c->nmethods; mi++) {
+      const ClassMethod *mm = &c->methods[mi];
+      if (mm->isCtor) {
+        printf("\n%s %s_ctor(%s) {\n", c->name, c->name,
+               mm->params[0] ? mm->params : "void");
+        printf("  %s __self = {0};\n", c->name);
+        printf("  %s *self = &__self;\n", c->name);
+        for (int f = 0; f < c->nfields; f++) {
+          const ClassField *fl = &c->fields[f];
+          if (!fl->hasInit || !fl->ninit) continue;
+          printf("  self->%s = ", fl->name);
+          emit_class_body(c, mm, fl->init, fl->ninit);
+          printf(";\n");
+        }
+        if (mm->nbody > 0) emit_class_body(c, mm, mm->body, mm->nbody);
+        printf("  return __self;\n}\n\n");
+      } else {
+        printf("\n%s %s_%s(%s *self%s%s) {\n", mm->ret, c->name, mm->name, c->name,
+               mm->params[0] ? ", " : "", mm->params[0] ? mm->params : "");
+        if (mm->nbody > 0) emit_class_body(c, mm, mm->body, mm->nbody);
+        printf("}\n\n");
+      }
+    }
+  }
 }
 
 
@@ -717,6 +1518,21 @@ int main(int argc, char *argv[]) {
     num_tokens = n;
   }
 
+  // Phase 6: user-defined classes. Must run BEFORE the name-collision rename
+  // and the forward-declaration prescan: rewrite_classes() strips `class NAME
+  // { ... }` blocks, records member metadata (typedefs/prototypes/definitions
+  // are emitted around the sketch body), and routes `new X(...)`,
+  // ArrayList member ops, cast-gets and class member calls on typed
+  // receivers. Method-body tokens are copied out, so the source array can be
+  // freed here as usual.
+  {
+    Token *rewritten;
+    int new_count = rewrite_classes(tokens, num_tokens, &rewritten);
+    free(tokens);
+    tokens = rewritten;
+    num_tokens = new_count;
+  }
+
   // Java allows a variable and a function to share a name (separate
   // namespaces); C does not. Rename colliding functions NAME -> NAME_fn at
   // definition and call sites (call = IDENT followed by "(").
@@ -778,6 +1594,11 @@ int main(int argc, char *argv[]) {
 
   // Print framework header (pack_color lives in processing.h, arity-routed)
   printf("#include \"processing.h\"\n\n");
+
+  // Phase 6: user-class structs + method prototypes, emitted up front so the
+  // sketch globals/body (printed below) can refer to `new Class(...)` and
+  // `obj.method(...)` before the definitions appear in the postlude.
+  emit_class_typedefs_and_protos();
 
   // ---- forward declaration pre-scan -------------------------------------
   // Scan for "TYPE NAME(params) {" definitions and emit C prototypes so
@@ -1221,6 +2042,13 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
+    // 3e1. Java null literal -> NULL
+    if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "null") == 0) {
+      printf("NULL");
+      i++;
+      continue;
+    }
+
     // 3e2. String[] array declarations -> const char **name (pointer form,
     //      like the "TYPE[] name" -> "TYPE *name" rewrite for primitives)
     if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "String") == 0 &&
@@ -1643,6 +2471,10 @@ int main(int argc, char *argv[]) {
     i++;
   }
 
+  // Phase 6: user-class method/constructor definitions, emitted after the
+  // sketch body (so they may call sketch-level helpers) and before main().
+  emit_class_definitions();
+
   printf("\n\nint main(void) {\n");
   // Processing's settings() (window size etc.) runs before setup()
   for (int p = 1; p < num_tokens; p++) {
@@ -1656,6 +2488,9 @@ int main(int argc, char *argv[]) {
     }
   }
   printf("    setup();\n");
+  // a sketch that never calls size() still needs a window (Processing always
+  // shows a canvas, even an empty setup)
+  printf("    if (_windowInit == 0) size3(640, 480, \"Processing Ray\");\n");
   printf("    while (!WindowShouldClose() && !_exitRequested) {\n");
   printf("        beginDraw();\n");
   printf("        if (_loopRunning || _redrawPending) {\n");

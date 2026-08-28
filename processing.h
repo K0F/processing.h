@@ -124,6 +124,7 @@ static int mouseButton = UNDEFINED;
 static bool _loopRunning = true;
 static bool _redrawPending = true;   // draw() runs once even after setup noLoop()
 static bool _exitRequested = false;
+static bool _windowInit = false;
 
 // event callbacks (weak: defined only when the sketch provides them) /////
 __attribute__((weak)) void keyPressed_event(void);
@@ -634,6 +635,7 @@ static inline void size3(int w, int h, const char *title) {
 
   // offscreen canvas all drawing renders into (Processing PGraphics model)
   _canvas = LoadRenderTexture(w, h);
+  _windowInit = true;
 }
 
 static inline void size2(int w, int h) {
@@ -838,6 +840,8 @@ static inline void _pumpEvents(void) {
 }
 
 static inline void beginDraw(void) {
+  // a sketch may never call size() (e.g. empty setup): give it a real window
+  if (_canvas.id == 0) size3(640, 480, "Processing Ray");
   width = GetScreenWidth();
   height = GetScreenHeight();
   pmouseX = mouseX;
@@ -1098,6 +1102,72 @@ static inline int _pde_arr_len(const void *ptr) {
 #define _pde_len_sel(A) _Generic(&(A), \
     __typeof__(A[0])(*)[(sizeof(A) / sizeof((A)[0]))]: (int)(sizeof(A) / sizeof(*(A))), \
     default: _pde_arr_len((const void *)(A)))
+
+// ArrayList (in-memory subset). Each element is a malloc'ed copy of the
+// original value; `get` returns a void* to that copy so the Processing
+// cast idiom `(Type) list.get(i)` compiles to `*(Type *) _pde_ag_get(...)`.
+typedef struct _PdeArrayList {
+  void **data;
+  int len;
+  int cap;
+} _PdeArrayListT;
+typedef _PdeArrayListT *ArrayList;
+
+static inline ArrayList _pde_ag_new(void) { return calloc(sizeof(_PdeArrayListT), 1); }
+
+static inline void *_pde_ag_dup(const void *src, size_t esz) {
+  void *p = malloc(esz ? esz : 1);
+  if (p && src) memcpy(p, src, esz);
+  return p;
+}
+
+static inline void _pde_ag_add_fn(ArrayList l, void *elem) {
+  if (!l) return;
+  if (l->len >= l->cap) {
+    int nc = l->cap ? l->cap * 2 : 8;
+    void **nd = (void **)realloc(l->data, sizeof(void *) * (size_t)nc);
+    if (!nd) return;
+    l->data = nd;
+    l->cap = nc;
+  }
+  l->data[l->len++] = elem;
+}
+#define _pde_ag_add(L, I)                                                        \
+  _pde_ag_add_fn((L), ({ typeof(I) _pde_v = (I); _pde_ag_dup(&_pde_v, sizeof(I)); }))
+
+static inline void *_pde_ag_get(const ArrayList l, int i) {
+  if (!l || i < 0 || i >= l->len) return NULL;
+  return l->data[i];
+}
+
+static inline int _pde_ag_size(const ArrayList l) { return l ? l->len : 0; }
+
+static inline void _pde_ag_set_fn(ArrayList l, int i, void *elem) {
+  if (!l || i < 0 || i >= l->len) return;
+  free(l->data[i]);
+  l->data[i] = elem;
+}
+#define _pde_ag_set(L, I, X)                                                      \
+  _pde_ag_set_fn((L), (I), ({ typeof(X) _pde_v = (X); _pde_ag_dup(&_pde_v, sizeof(X)); }))
+
+static inline void _pde_ag_remove(ArrayList l, int i) {
+  if (!l || i < 0 || i >= l->len) return;
+  free(l->data[i]);
+  for (int k = i; k < l->len - 1; k++) l->data[k] = l->data[k + 1];
+  l->len--;
+}
+
+static inline void _pde_ag_clear(ArrayList l) {
+  if (!l) return;
+  for (int i = 0; i < l->len; i++) free(l->data[i]);
+  free(l->data);
+  l->data = NULL;
+  l->len = 0;
+  l->cap = 0;
+}
+
+// no-arg <Type> generic terminals that write an empty list
+#define _pde_ag_clear_all(Ls) do { for (int _i = 0; _i < 8; _i++) _pde_ag_clear((Ls)[_i]); } while (0)
 
 // String[] utilities: splitTokens, split, join ///////////////////////////
 // Results are registered heap arrays so .length works through _pde_len.
@@ -1623,6 +1693,9 @@ static inline PImage pimage_get_region(PImage *img, int x, int y, int w, int h) 
 
 static inline void pushMatrix(void) { rlPushMatrix(); }
 static inline void popMatrix(void) { rlPopMatrix(); }
+#define push() pushMatrix()
+#define pop() popMatrix()
+#define ortho(...) rlOrtho(-800.0, 800.0, -450.0, 450.0, 0.1, 1000.0)
 static inline void translate2(float x, float y) { rlTranslatef(x, y, 0.0f); }
 static inline void translate3(float x, float y, float z) { rlTranslatef(x, y, z); }
 #define TRANSLATE_CHOOSER(_1, _2, _3, NAME, ...) NAME
