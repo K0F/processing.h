@@ -79,16 +79,30 @@ mapped back to the original source lines via `#line` directives.
 - **Rendering**: point, line, rect/ellipse/circle/square with `rectMode` /
   `ellipseMode`, triangle, quad, arc, bezier, polygon fill via ear clipping
   (`beginShape/vertex/endShape(CLOSE)` incl. concave shapes), strokes with
-  `strokeWeight`, canvas-based `loadPixels/updatePixels`
+  `strokeWeight` + `strokeCap`/`strokeJoin` (ROUND/SQUARE/PROJECT/MITER/BEVEL),
+  canvas-based `loadPixels/updatePixels`
 - **Color**: `color()` packing, hex literals (`#FF8800`), `red/green/blue/alpha`,
-  `brightness/saturation/hue`, `lerpColor`
+  `brightness/saturation/hue`, `lerpColor`, `blendColor`/`blendMode`
+  (BLEND/ADD/SUBTRACT/DARKEST/LIGHTEST/DIFFERENCE/EXCLUSION/
+  MULTIPLY/SCREEN/OVERLAY/HARD_LIGHT/SOFT_LIGHT/DODGE/BURN),
+  `hex()/unhex()`
 - **Math & random**: `constrain/dist/mag/norm/sq/map`, Java-style `%` (works on
-  floats), Perlin `noise` + `noiseDetail`, `randomSeed`, `randomGaussian`
-- **Input**: `key/keyCode/keyPressed`, mouse position/buttons, plus
-  `keyPressed()/keyReleased()/mousePressed()/mouseReleased()` callbacks
+  floats), Perlin `noise` + `noiseDetail`/`noiseSeed`, `randomSeed`,
+  `randomGaussian`, `round/floor/ceil`, `bezierPoint/bezierTangent`,
+  `curve()` + `curvePoint/curveTangent/curveTightness`
+- **Conversions**: Processing-style function casts `int(3.7)`, `float(n)`,
+  `boolean(x)`, `char(65)`, `byte(n)` -> C casts; `str()` converts single
+  numbers to text and passes strings through (multi-arg acts as printf)
+- **Input**: `key/keyCode/keyPressed` (incl. full `CODED` special set:
+  LEFT/RIGHT/UP/DOWN/ENTER/ESC/TAB/BACKSPACE/DELETE), mouse
+  position/buttons, `pmouseX/pmouseY`, `mouseWheelDelta`, plus
+  `keyPressed()/keyReleased()/mousePressed()/mouseReleased()/
+  mouseMoved()/mouseDragged()/mouseWheel()` callbacks
 - **Time / loop**: `millis`, `second/minute/hour/day/month/year`,
   `frameRate()`, `noLoop/loop/redraw/exit`
-- **Text**: fonts, sizes, `textAlign`, printing numbers directly via `text(3+4, x, y)`
+- **Text**: fonts, sizes, `textAlign`, `textLeading/textAscent/textDescent`,
+  printing numbers directly via `text(3+4, x, y)`, numeric formatting
+  `nf/nfs/nfp/nfc` (zero-pad, explicit sign, comma grouping)
 - **Transforms**: `pushMatrix/popMatrix/translate/rotate/rotateX/Y/Z/shearX/shearY/resetMatrix`
 - **PVector**: full static-method set including arrays (`new PVector[10]`) and
   method-call rewriting (`v.add(w)` etc.)
@@ -104,16 +118,28 @@ mapped back to the original source lines via `#line` directives.
   variable/function name collisions auto-renamed (`NAME` -> `NAME_fn`)
 - **Strings**: `"a: " + x + "!"` concatenation folded into `_pde_cat` calls
   (numbers formatted `%g`), `.charAt(i)` mapped to a helper returning a
-  1-char string, `color()` arity-routed incl. single packed arg
+  1-char string, `color()` arity-routed incl. single packed arg, String arrays
+  (`String[]`) mapped to `const char **` pointers, `split()`/`splitTokens()`/
+  `join()` returning registered arrays, `println()` accepts bare values
+  (numbers and strings) with 0/low-arg callbacks
+- **Arrays**: heap arrays `new TYPE[n]` remember their length in a registry;
+  `.length` works for both true C arrays and heap arrays via a `_Generic`
+  dispatch, `append/expand/concat/subset/shorten/reverse/splice/sort`
+  (type-dispatched for float/int/bool/color/string)
 - **PImage**: disk loading (`loadImage`, normalized to RGBA8), `createImage`,
   `image()` type-dispatched between canvases and images via `_Generic`,
   `tint/noTint`, GPU texture caching, direct `pixels[]` access
   (`img.pixels[i]` aliases the RGBA buffer), member ops rewritten by the
   transpiler: `loadPixels/updatePixels/filter/mask/resize/save`,
-  `beginDraw/endDraw` on PGraphics
+  `get()` (packed color, copy, or region), `beginDraw/endDraw` on PGraphics
 - **3D (OPENGL sketches)**: `translate(x,y,z)`, renderer constants
-  (`P2D/P3D/OPENGL` accepted by `size()`), `sphere()/sphereDetail()` drawn
-  under a temporary perspective projection (fill faces + stroke wires),
+  (`P2D/P3D/OPENGL` accepted by `size()`), `sphere()/sphereDetail()` and
+  `box()`/`box(w,h,d)` drawn under a temporary perspective projection
+  (fill faces + stroke wires), `camera()` (0-arg reset and the full 9-arg
+  Processing camera, honored by box/sphere), `normal()` no-op stub for
+  P3D shaping, shape vertex modes
+  (`beginShape(TRIANGLES/TRIANGLE_STRIP/TRIANGLE_FAN/QUADS/QUAD_STRIP/
+  LINES/POINTS)`),
   `PMatrix/getMatrix()/applyMatrix()` backed by raylib matrices
 
 Out of the ~20 real-world sketches in `~/src/2021` used as a test corpus, 9
@@ -129,7 +155,7 @@ types) and non-constant global initializers.
 Classes and inheritance, `ArrayList` and collections, generics,
 external libraries (`import` lines are stripped, but the library calls
 themselves do not link: OscP5, video, MidiBus),
-try/catch, most `String` methods beyond `charAt`,
-`curveVertex/bezierVertex` inside arbitrary paths,
-`loadStrings` file IO, drawing calls on PGraphics receivers
+try/catch, most `String` methods beyond `charAt` / `split` (indexOf,
+substring, toLowerCase, ...), `curveVertex/bezierVertex` inside arbitrary
+paths, `loadStrings` file IO, drawing calls on PGraphics receivers
 (`pg.stroke()` style — only `beginDraw/endDraw` are routed).

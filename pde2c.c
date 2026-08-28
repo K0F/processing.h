@@ -27,7 +27,7 @@ const char *pdeFileName(int id) {
 bool is_keyword(const char *str) {
   const char *keywords[] = {
     "void", "int", "float", "boolean", "color", "char", "double",
-    "if", "else", "for", "while", "return", "true", "false", "setup", "draw"
+    "byte", "if", "else", "for", "while", "return", "true", "false", "setup", "draw"
   };
   int num_keywords = sizeof(keywords) / sizeof(keywords[0]);
   for (int i = 0; i < num_keywords; i++) {
@@ -41,6 +41,7 @@ bool is_type_token(Token t) {
   return (t.type == TOKEN_KEYWORD &&
           (strcmp(t.text, "int") == 0 || strcmp(t.text, "float") == 0 ||
            strcmp(t.text, "char") == 0 || strcmp(t.text, "double") == 0 ||
+           strcmp(t.text, "byte") == 0 ||
            strcmp(t.text, "boolean") == 0 || strcmp(t.text, "color") == 0));
 }
 
@@ -79,8 +80,10 @@ bool is_trailing_array_def(Token *tokens, int num_tokens, int i) {
 // Processing event callbacks are renamed so they can coexist with the
 // same-named state variables in processing.h (e.g. bool keyPressed).
 const char *event_callback_suffix(const char *name) {
-  static const char *names[] = { "keyPressed", "keyReleased", "mousePressed", "mouseReleased" };
-  for (int i = 0; i < 4; i++) {
+  static const char *names[] = { "keyPressed", "keyReleased",
+                                 "mousePressed", "mouseReleased",
+                                 "mouseMoved", "mouseDragged", "mouseWheel" };
+  for (int i = 0; i < 7; i++) {
     if (strcmp(name, names[i]) == 0) return "_event";
   }
   return NULL;
@@ -90,6 +93,7 @@ const char *event_callback_suffix(const char *name) {
 void emit_c_type(const char *javaType) {
   if (strcmp(javaType, "boolean") == 0)      printf("bool");
   else if (strcmp(javaType, "color") == 0)   printf("uint32_t");
+  else if (strcmp(javaType, "byte") == 0)    printf("uint8_t");
   else if (strcmp(javaType, "String") == 0)  printf("const char *");
   else                                       printf("%s", javaType);
 }
@@ -99,8 +103,10 @@ const char *emit_c_type_str(const char *javaType) {
   static const char *boolean_t = "bool";
   static const char *color_t = "uint32_t";
   static const char *string_t = "const char *";
+  static const char *byte_t = "uint8_t";
   if (strcmp(javaType, "boolean") == 0)     return boolean_t;
   if (strcmp(javaType, "color") == 0)       return color_t;
+  if (strcmp(javaType, "byte") == 0)        return byte_t;
   if (strcmp(javaType, "String") == 0)      return string_t;
   return javaType;
 }
@@ -536,16 +542,27 @@ int tokenize(const char *source, Token **tokens_out, size_t capacity_in) {
       continue;
     }
 
-    // numbers
+    // numbers (incl. Java hex 0x... and long suffix 1234L)
     if (isdigit(source[i])) {
       int len = 0;
       tokens[t_count].type = TOKEN_NUMBER;
-      while ((isdigit(source[i]) || source[i] == '.' || source[i] == 'f') &&
-             len < MAX_TOKEN_TEXT - 1) {
-        if (source[i] == '.' && !isdigit(source[i+1])) {
-          break;
+      if (source[i] == '0' && (source[i+1] == 'x' || source[i+1] == 'X')) {
+        tokens[t_count].text[len++] = source[i++]; // '0'
+        tokens[t_count].text[len++] = source[i++]; // 'x'
+        while (isxdigit(source[i]) && len < MAX_TOKEN_TEXT - 1)
+          tokens[t_count].text[len++] = source[i++];
+        if (source[i] == 'l' || source[i] == 'L')
+          tokens[t_count].text[len++] = source[i++];
+      } else {
+        while ((isdigit(source[i]) || source[i] == '.' || source[i] == 'f') &&
+               len < MAX_TOKEN_TEXT - 1) {
+          if (source[i] == '.' && !isdigit(source[i+1])) {
+            break;
+          }
+          tokens[t_count].text[len++] = source[i++];
         }
-        tokens[t_count].text[len++] = source[i++];
+        if (source[i] == 'l' || source[i] == 'L')
+          tokens[t_count].text[len++] = source[i++];
       }
       tokens[t_count].text[len] = '\0';
       tokens[t_count].line = current_line;
@@ -1197,11 +1214,23 @@ int main(int argc, char *argv[]) {
     // 3e. String type declarations -> const char *
     if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "String") == 0 &&
         (i + 1 < num_tokens) &&
-        (tokens[i+1].type == TOKEN_IDENTIFIER ||
-         (tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "[") == 0)))
+        tokens[i+1].type == TOKEN_IDENTIFIER)
     {
       printf("const char *");
       i++;
+      continue;
+    }
+
+    // 3e2. String[] array declarations -> const char **name (pointer form,
+    //      like the "TYPE[] name" -> "TYPE *name" rewrite for primitives)
+    if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "String") == 0 &&
+        (i + 3 < num_tokens) &&
+        tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "[") == 0 &&
+        tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "]") == 0 &&
+        tokens[i+3].type == TOKEN_IDENTIFIER)
+    {
+      printf("const char **%s", tokens[i+3].text);
+      i += 4;
       continue;
     }
 
@@ -1266,9 +1295,26 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    // 6. Map boolean keyword
+    // 6. Map boolean keyword (type OR conversion cast: boolean(x) -> (bool)(x))
     if (current.type == TOKEN_KEYWORD && strcmp(current.text, "boolean") == 0) {
-      printf("bool ");
+      if (i + 1 < num_tokens && tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "(") == 0)
+        printf("(bool)");
+      else
+        printf("bool ");
+      i++;
+      continue;
+    }
+
+    // 6b. Primitive type as conversion cast: int(x), float(x), char(x),
+    //     double(x), byte(x) -> (int)(x) etc. (C has no function-style casts)
+    if (current.type == TOKEN_KEYWORD &&
+        (strcmp(current.text, "int") == 0 || strcmp(current.text, "float") == 0 ||
+         strcmp(current.text, "char") == 0 || strcmp(current.text, "double") == 0 ||
+         strcmp(current.text, "byte") == 0) &&
+        (i + 1 < num_tokens) &&
+        tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "(") == 0)
+    {
+      printf("(%s)", emit_c_type_str(current.text));
       i++;
       continue;
     }
@@ -1309,6 +1355,21 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
+    // 7d. camera(): zero-arg form is the reset; 9-arg is left to the header
+    //     macro (CAMERA_CHOOSER) which selects camera9 for the full call.
+    if (current.type == TOKEN_IDENTIFIER &&
+        strcmp(current.text, "camera") == 0 &&
+        (i + 2 < num_tokens) &&
+        tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "(") == 0)
+    {
+      bool zeroArg = (tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, ")") == 0);
+      if (zeroArg) {
+        printf("camera0(");
+        i += 2;
+        continue;
+      }
+    }
+
     // 8. PVector object method rewriting (table-driven)
     //    mutators: v.add(w)      -> v = pvector_add(v, w)
     //    accessors: v.mag()      -> pvector_mag(v)
@@ -1342,16 +1403,16 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    // 8b. Java array .length -> C sizeof expression
-    //     (true arrays only: brace-initialized decls emit "TYPE name[]";
-    //      arrays decayed to pointer params give a wrong count — known limit)
+    // 8b. Java array .length -> _pde_len(name): exact count for brace-initialized
+    //     true arrays (via _Generic array branch) AND heap arrays allocated by
+    //     _pde_array_new/expand (via registry lookup).
     if (current.type == TOKEN_IDENTIFIER &&
         (i + 2 < num_tokens) &&
         tokens[i+1].type == TOKEN_DOT &&
         tokens[i+2].type == TOKEN_IDENTIFIER &&
         strcmp(tokens[i+2].text, "length") == 0)
     {
-      printf("(sizeof(%s) / sizeof(*%s))", current.text, current.text);
+      printf("_pde_len(%s)", current.text);
       i += 3;
       continue;
     }
@@ -1384,6 +1445,43 @@ int main(int argc, char *argv[]) {
         printf("endGraphics()");
         i = j;
         continue;
+      }
+      else if (strcmp(op, "get") == 0) {
+        // img.get()                -> pimage_get_copy(&img)
+        // img.get(x,y)             -> pimage_get_px(&img, x, y)      [color]
+        // img.get(x,y,w,h)         -> pimage_get_region(&img, x..h)  [region]
+        int j = i + 3;
+        if (j < num_tokens && tokens[j].type == TOKEN_SYMBOL &&
+            strcmp(tokens[j].text, "(") == 0) {
+          int close = j, depth = 1;
+          for (int q = j + 1; q < num_tokens && depth > 0; q++) {
+            if (tokens[q].type == TOKEN_SYMBOL && strcmp(tokens[q].text, "(") == 0) depth++;
+            else if (tokens[q].type == TOKEN_SYMBOL && strcmp(tokens[q].text, ")") == 0) { depth--; if (depth == 0) close = q; }
+          }
+          // count top-level commas to pick arity
+          int commas = 0, d2 = 0;
+          for (int q = j + 1; q < close; q++) {
+            Token t = tokens[q];
+            if (t.type == TOKEN_SYMBOL && strcmp(t.text, "(") == 0) d2++;
+            else if (t.type == TOKEN_SYMBOL && strcmp(t.text, ")") == 0) d2--;
+            else if (t.type == TOKEN_SYMBOL && strcmp(t.text, ",") == 0 && d2 == 0) commas++;
+          }
+          if (commas == 0) {
+            printf("pimage_get_copy(&%s)", current.text);
+          } else {
+            const char *fn = (commas >= 3) ? "pimage_get_region" : "pimage_get_px";
+            printf("%s(&%s,", fn, current.text);
+            for (int q = j + 1; q < close; q++) {
+              Token t = tokens[q];
+              printf("%s", t.text);
+              if (t.type != TOKEN_DOT && t.type != TOKEN_OPERATOR &&
+                  !(t.type == TOKEN_SYMBOL && strchr("([{,", t.text[0]))) printf(" ");
+            }
+            printf(")");
+          }
+          i = close + 1;
+          continue;
+        }
       }
       if (helper != NULL) {
         int j = i + 3;

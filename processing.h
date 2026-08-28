@@ -68,14 +68,32 @@ enum {
 enum {
   OPEN = 0,
   CLOSE = 1,
-  CHORD = 2,
-  PIE = 3
+  CHORD = 2,   // arc mode; shares Processing's global constant values with
+  PIE = 3,     // POINTS / LINES below (real Processing uses the same ints)
+  POINTS = 2,  // vertex modes
+  LINES = 3,
+  TRIANGLES = 4,
+  TRIANGLE_STRIP = 5,
+  TRIANGLE_FAN = 6,
+  QUADS = 7,
+  QUAD_STRIP = 8,
+  POLYGON = 9
+};
+enum {
+  ROUND = 100,   // stroke cap
+  SQUARE = 101,  // stroke cap (butt)
+  PROJECT = 102, // stroke cap (projecting)
+  MITER = 103,   // stroke join
+  BEVEL = 104    // stroke join
 };
 
 static int width = 814;
 static int height = 576;
 static int mouseX = 0;
 static int mouseY = 0;
+static int pmouseX = 0;
+static int pmouseY = 0;
+static int mouseWheelDelta = 0;
 static bool mousePressed = false;
 
 typedef Font PFont;
@@ -84,11 +102,14 @@ typedef RenderTexture2D PGraphics;
 static PFont _currentFont;
 static float _textSizeState = 14.0f;
 static float _textSpacing = 1.0f;
+static float _textLeading = 0.0f;
 static Color _fillColor = { 255, 255, 255, 255 };
 static Color _strokeColor = { 0, 0, 0, 255 };
 static bool _useFill = true;
 static bool _useStroke = true;
 static float _strokeW = 1.0f;
+static int _strokeCap = ROUND;
+static int _strokeJoin = MITER;
 static int _rectModeState = CORNER;
 static int _ellipseModeState = CORNER;
 static int _textAlignState = LEFT;
@@ -109,6 +130,9 @@ __attribute__((weak)) void keyPressed_event(void);
 __attribute__((weak)) void keyReleased_event(void);
 __attribute__((weak)) void mousePressed_event(void);
 __attribute__((weak)) void mouseReleased_event(void);
+__attribute__((weak)) void mouseMoved_event(void);
+__attribute__((weak)) void mouseDragged_event(void);
+__attribute__((weak)) void mouseWheel_event(void);
 
 // time origin for millis() //////////////////////////////////////////////
 static double _startTime = 0.0;
@@ -123,6 +147,7 @@ static float _noiseFalloff = 0.5f;
 static Vector2 _shapeVerts[_SHAPE_MAX_VERTS];
 static int _shapeVertCount = -1;
 static int _shapeModeClose = 0;
+static int _shapeMode = POLYGON;
 
 static Font main_font;
 static float current_text_size = 14.0f; 
@@ -136,7 +161,23 @@ static Texture2D _pixelsTexture;
 static RenderTexture2D _canvas;
 
 // macros ////////////////////////////////////////////////////////////////
-#define str(...) TextFormat(__VA_ARGS__)
+// str(..): with one arg, convert numbers to text and pass strings through;
+// with multiple args act as TextFormat (printf) like Processing's str() does
+// for "str()". Java str() semantics: str() grows the "String" abstraction.
+static inline const char *_pde_str_num(double v) {
+  static char _strNumBufs[4][64];
+  static int _strNumIdx = 0;
+  char *out = _strNumBufs[_strNumIdx];
+  _strNumIdx = (_strNumIdx + 1) & 3;
+  snprintf(out, 64, "%g", v);
+  return out;
+}
+static inline const char *_pde_str_pass(const char *s) { return s; }
+#define STR_CHOOSER(_1, _2, NAME, ...) NAME
+#define str(...) STR_CHOOSER(__VA_ARGS__, str_format, str_one)(__VA_ARGS__)
+#define str_one(A) _Generic((A), \
+    const char *: _pde_str_pass, char *: _pde_str_pass, default: _pde_str_num)(A)
+#define str_format(...) TextFormat(__VA_ARGS__)
 
 // SIZE MACRO
 #define SIZE_CHOOSER(_1, _2, _3, NAME, ...) NAME
@@ -154,9 +195,18 @@ static RenderTexture2D _canvas;
 #define STROKE_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
 #define stroke(...) STROKE_CHOOSER(__VA_ARGS__, stroke4, stroke3, stroke2, stroke1, DUMMY)(__VA_ARGS__)
 
-// abs: type-preserving so integer array subscripts stay integers
+// abs: type-preserving so integer array subscripts stay integers. unsigned and
+// long widen to long long so they don't fall through to the float default.
 static inline int _pde_absi(int v) { return v < 0 ? -v : v; }
-#define abs(X) _Generic((X), int: _pde_absi, default: fabsf)(X)
+static inline long long _pde_absl(long long v) { return v < 0 ? -v : v; }
+#define abs(X) _Generic((X), \
+    int: _pde_absi, \
+    unsigned int: _pde_absl, \
+    long: _pde_absl, \
+    unsigned long: _pde_absl, \
+    long long: _pde_absl, \
+    unsigned long long: _pde_absl, \
+    default: fabsf)(X)
 
 // COLOR PACKER (arity-routed): color(r,g,b), color(r,g,b,a), and single-arg
 // forms pass through unpacked (hex literals arrive pre-packed by pde2c)
@@ -343,6 +393,21 @@ static inline void noiseDetail2(int lod, float falloff) {
   _noiseFalloff = falloff;
 }
 
+// noiseSeed: reseed Perlin permutation only (does not touch rand()),
+// matching Processing's separate noise seed state.
+static inline void noiseSeed(unsigned long seed) {
+  for (int i = 0; i < 256; i++) _noisePerm[i] = i;
+  unsigned int s = (unsigned int)seed;
+  for (int i = 255; i > 0; i--) {
+    s = s * 1103515245u + 12345u;
+    unsigned int j = (s >> 16) % (unsigned int)(i + 1);
+    int tmp = _noisePerm[i];
+    _noisePerm[i] = _noisePerm[j];
+    _noisePerm[j] = tmp;
+  }
+  for (int i = 0; i < 256; i++) _noisePerm[256 + i] = _noisePerm[i];
+}
+
 // PFont ////////////////////////////////////////////////////////////////
 
 static inline PFont loadFont2(const char *filename, int fontSize) {
@@ -429,6 +494,21 @@ static inline float textWidth(const char *textStr) {
   return MeasureTextEx(_currentFont, textStr, (float)((int)_textSizeState), _textSpacing).x;
 }
 
+// textLeading: line-to-line spacing (defaults to the font base size)
+static inline void textLeading(float leading) {
+  _textLeading = leading;
+}
+
+static inline float textAscent(void) {
+  if (_currentFont.baseSize > 0) return (float)_currentFont.baseSize;
+  return _textSizeState * 0.8f;
+}
+
+static inline float textDescent(void) {
+  if (_currentFont.baseSize > 0) return (float)_currentFont.baseSize * 0.2f;
+  return _textSizeState * 0.2f;
+}
+
 static inline void text_str(const char *format, float x, float y, ...) {
     if (!_useFill) return;
 
@@ -479,7 +559,7 @@ static inline void print(const char *format, ...) {
     fflush(stdout);
 }
 
-static inline void println(const char *format, ...) {
+static inline void _pde_println_vfmt(const char *format, ...) {
     va_list args;
     va_start(args, format);
     vprintf(format, args);
@@ -487,6 +567,35 @@ static inline void println(const char *format, ...) {
     printf("\n");
     fflush(stdout);
 }
+
+static inline void _pde_print_str(const char *s) { printf("%s\n", s); fflush(stdout); }
+static inline void _pde_print_num(double v) { printf("%g\n", v); fflush(stdout); }
+
+// println(): Processor-style 0/1/multi arg dispatch. Single numeric args are
+// printed directly; single strings pass through; multi-arg acts as printf.
+#define PRINTLN_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
+#define println(...) PRINTLN_CHOOSER(0, __VA_ARGS__, _pde_println_fmt, _pde_println_fmt, _pde_println_one, _pde_println_none)(__VA_ARGS__)
+#define _pde_println_none() (void)printf("\n")
+#define _pde_println_one(v) _Generic((v), \
+    const char *: _pde_print_str, char *: _pde_print_str, default: _pde_print_num)(v)
+#define _pde_println_fmt(...) _pde_println_vfmt(__VA_ARGS__)
+
+static inline void _pde_print_strl(const char *s) { printf("%s", s); fflush(stdout); }
+static inline void _pde_print_numl(double v) { printf("%g", v); fflush(stdout); }
+static inline void _pde_print_vfmt(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vprintf(format, args);
+    va_end(args);
+    fflush(stdout);
+}
+
+// print(): single numeric/string arg prints directly; multi-arg acts as printf.
+#define PRINT_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define print(...) PRINT_CHOOSER(0, __VA_ARGS__, _pde_print_fmt, _pde_print_one)(__VA_ARGS__)
+#define _pde_print_one(v) _Generic((v), \
+    const char *: _pde_print_strl, char *: _pde_print_strl, default: _pde_print_numl)(v)
+#define _pde_print_fmt(...) _pde_print_vfmt(__VA_ARGS__)
 
 ///////////////////////////////////////////////////////////////////////////////////////////
 
@@ -705,11 +814,34 @@ static inline void _pumpEvents(void) {
       IsMouseButtonReleased(MOUSE_BUTTON_MIDDLE)) {
     if (mouseReleased_event) mouseReleased_event();
   }
+
+  // mouse movement: Moved when no button held, Dragged while held
+  int mx = GetMouseX(), my = GetMouseY();
+  if (mx != pmouseX || my != pmouseY) {
+    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) ||
+        IsMouseButtonDown(MOUSE_BUTTON_RIGHT) ||
+        IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
+      if (mouseDragged_event) mouseDragged_event();
+    } else {
+      if (mouseMoved_event) mouseMoved_event();
+    }
+  }
+
+  // wheel
+  int wheelMove = (int)GetMouseWheelMove();
+  if (wheelMove != 0) {
+    mouseWheelDelta = wheelMove;
+    if (mouseWheel_event) mouseWheel_event();
+  } else {
+    mouseWheelDelta = 0;
+  }
 }
 
 static inline void beginDraw(void) {
   width = GetScreenWidth();
   height = GetScreenHeight();
+  pmouseX = mouseX;
+  pmouseY = mouseY;
   mouseX = GetMouseX();
   mouseY = GetMouseY();
   mousePressed = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
@@ -805,6 +937,83 @@ static inline const char* nfFloat(float value, int left, int right) {
   return buf;
 }
 
+// nf / nfs / nfp / nfc (arity + numeric type dispatch) //////////////////
+// nf: zero-pad to given digit count. nfp: like nf with explicit sign for
+// positives. nfs: no padding, but explicit sign. nfc: comma grouping.
+static inline const char *_pde_numfmt(double v, int left, int right,
+                                      int padFlag, int commaFlag, int signFlag) {
+  static char bufs[4][96];
+  static int idx = 0;
+  char *buf = bufs[idx];
+  idx = (idx + 1) & 3;
+  double av = (v < 0) ? -v : v;
+  char temp[64];
+  if (padFlag) snprintf(temp, sizeof temp, "%.*f", right, av);
+  else if (right > 0) snprintf(temp, sizeof temp, "%.*f", right, av);
+  else if (commaFlag) snprintf(temp, sizeof temp, "%.0f", av);
+  else snprintf(temp, sizeof temp, "%g", av);
+  const char *dot = strchr(temp, '.');
+  size_t il = dot ? (size_t)(dot - temp) : strlen(temp);
+  char intpart[40], frac[20];
+  memcpy(intpart, temp, il);
+  intpart[il] = '\0';
+  strcpy(frac, dot ? dot : "");
+  int missing = left - (int)il;
+  if (missing < 0) missing = 0;
+  int i = 0;
+  if (signFlag && v >= 0) buf[i++] = '+';
+  else if (v < 0) buf[i++] = '-';
+  for (int k = 0; k < missing; k++) buf[i++] = '0';
+  if (commaFlag) {
+    int indent = (int)strlen(intpart) % 3;
+    if (indent == 0) indent = 3;
+    for (int k = 0; k < indent; k++) buf[i++] = intpart[k];
+    for (int k = indent; intpart[k]; k++) {
+      if ((k - indent) % 3 == 0) buf[i++] = ',';
+      buf[i++] = intpart[k];
+    }
+  } else {
+    for (int k = 0; intpart[k]; k++) buf[i++] = intpart[k];
+  }
+  for (int k = 0; frac[k]; k++) buf[i++] = frac[k];
+  buf[i] = '\0';
+  return buf;
+}
+
+#define _NF_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define nf(...) _NF_CHOOSER(__VA_ARGS__, _pde_nf3, _pde_nf2, _pde_nf1)(__VA_ARGS__)
+#define _pde_nf1(v) _Generic((v), float: _pde_nf_f1, double: _pde_nf_f1, default: _pde_nf_f1)(v)
+static inline const char *_pde_nf_f1(double v) { return _pde_numfmt(v, 0, 0, 0, 0, 0); }
+#define _pde_nf2(v, d) _Generic((v), float: _pde_nf_f2, double: _pde_nf_f2, default: _pde_nf_i2)(v, d)
+static inline const char *_pde_nf_f2(double v, int d) { return _pde_numfmt(v, 0, d, 0, 0, 0); }
+static inline const char *_pde_nf_i2(double v, int d) { return _pde_numfmt(v, d, 0, 1, 0, 0); }
+static inline const char *_pde_nf3(double v, int l, int r) { return _pde_numfmt(v, l, r, 1, 0, 0); }
+
+#define _NFS_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define nfs(...) _NFS_CHOOSER(__VA_ARGS__, _pde_nfs3, _pde_nfs2, _pde_nfs1)(__VA_ARGS__)
+#define _pde_nfs1(v) _Generic((v), float: _pde_nfs_f1, double: _pde_nfs_f1, default: _pde_nfs_f1)(v)
+static inline const char *_pde_nfs_f1(double v) { return _pde_numfmt(v, 0, 0, 0, 0, 1); }
+#define _pde_nfs2(v, d) _Generic((v), float: _pde_nfs_f2, double: _pde_nfs_f2, default: _pde_nfs_i2)(v, d)
+static inline const char *_pde_nfs_f2(double v, int d) { return _pde_numfmt(v, 0, d, 0, 0, 1); }
+static inline const char *_pde_nfs_i2(double v, int d) { (void)d; return _pde_numfmt(v, 0, 0, 0, 0, 1); }
+static inline const char *_pde_nfs3(double v, int l, int r) { (void)l; return _pde_numfmt(v, 0, r, 0, 0, 1); }
+
+#define _NFP_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define nfp(...) _NFP_CHOOSER(__VA_ARGS__, _pde_nfp3, _pde_nfp2, _pde_nfp1)(__VA_ARGS__)
+#define _pde_nfp1(v) _Generic((v), float: _pde_nfp_f1, double: _pde_nfp_f1, default: _pde_nfp_f1)(v)
+static inline const char *_pde_nfp_f1(double v) { return _pde_numfmt(v, 0, 0, 1, 0, 1); }
+#define _pde_nfp2(v, d) _Generic((v), float: _pde_nfp_f2, double: _pde_nfp_f2, default: _pde_nfp_i2)(v, d)
+static inline const char *_pde_nfp_f2(double v, int d) { return _pde_numfmt(v, 0, d, 1, 0, 1); }
+static inline const char *_pde_nfp_i2(double v, int digits) { return _pde_numfmt(v, digits, 0, 1, 0, 1); }
+static inline const char *_pde_nfp3(double v, int l, int r) { return _pde_numfmt(v, l, r, 1, 0, 1); }
+
+#define _NFC_CHOOSER(_1, _2, NAME, ...) NAME
+#define nfc(...) _NFC_CHOOSER(__VA_ARGS__, _pde_nfc2, _pde_nfc1)(__VA_ARGS__)
+#define _pde_nfc1(v) _Generic((v), float: _pde_nfc_f1, double: _pde_nfc_f1, default: _pde_nfc_f1)(v)
+static inline const char *_pde_nfc_f1(double v) { return _pde_numfmt(v, 0, 0, 0, 1, 0); }
+#define _pde_nfc2(v, d) _Generic((v), float: _pde_nfc_f2, double: _pde_nfc_f2, default: _pde_nfc_f2)(v, d)
+static inline const char *_pde_nfc_f2(double v, int d) { return _pde_numfmt(v, 0, d, 0, 1, 0); }
+
 // string concat / charAt (rotating static buffers, same trick as nf) /////
 static const char *_pde_numf(double v) {
   static char bufs[4][64];
@@ -871,6 +1080,258 @@ static inline void *_pde_expand(void **arrp, int newSize, size_t esz) {
   _pde_arr_register(grown, (size_t)newSize, esz);
   return grown;
 }
+
+// Element count of a registered (heap) array; -1 when unknown.
+static inline int _pde_arr_len(const void *ptr) {
+  for (int i = 0; i < _pdeArrCount; i++) {
+    if (_pdeArrs[i].ptr == ptr) return (int)_pdeArrs[i].elems;
+  }
+  return -1;
+}
+
+// .length rewrite target. True C arrays hit the sizeof branch (exact count);
+// heap arrays allocated via _pde_array_new/expand hit the registry lookup.
+// The match uses the element type (A[0]) so the association is exactly
+// "pointer to array of the element type", e.g. float(*)[3] for float a[3];
+// always-compatible with the actual size constant.
+#define _pde_len(A) _pde_len_sel(A)
+#define _pde_len_sel(A) _Generic(&(A), \
+    __typeof__(A[0])(*)[(sizeof(A) / sizeof((A)[0]))]: (int)(sizeof(A) / sizeof(*(A))), \
+    default: _pde_arr_len((const void *)(A)))
+
+// String[] utilities: splitTokens, split, join ///////////////////////////
+// Results are registered heap arrays so .length works through _pde_len.
+
+static inline char *_pde_dup_len(const char *s, size_t n) {
+  char *out = (char *)malloc(n + 1);
+  if (!out) return (char *)(n ? s : "");
+  memcpy(out, s, n);
+  out[n] = '\0';
+  return out;
+}
+
+// splitTokens(s[, delims]): break into non-empty runs separated by any char
+// in delims (defaults to whitespace).
+static inline const char **splitTokens2(const char *s, const char *delims) {
+  static const char *ws = " \t\n\r\f";
+  if (!delims) delims = ws;
+  int count = 0;
+  const char *p = s;
+  while (*p) {
+    while (*p && strchr(delims, (unsigned char)*p)) p++;
+    if (*p) { count++; while (*p && !strchr(delims, (unsigned char)*p)) p++; }
+  }
+  const char **out = (const char **)calloc(count > 0 ? (size_t)count : 1, sizeof(const char *));
+  int idx = 0;
+  p = s;
+  while (*p) {
+    while (*p && strchr(delims, (unsigned char)*p)) p++;
+    if (*p) {
+      const char *start = p;
+      while (*p && !strchr(delims, (unsigned char)*p)) p++;
+      out[idx++] = _pde_dup_len(start, (size_t)(p - start));
+    }
+  }
+  _pde_arr_register(out, (size_t)(count > 0 ? count : 1), sizeof(const char *));
+  return out;
+}
+static inline const char **splitTokens1(const char *s) { return splitTokens2(s, NULL); }
+#define SPLITTOKENS_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define splitTokens(...) SPLITTOKENS_CHOOSER(0, __VA_ARGS__, splitTokens2, splitTokens1)(__VA_ARGS__)
+
+// split(s, delim): exact substring delimiter (Java-literal semantics);
+// trailing empty fields are dropped like Java's split().
+static inline const char **split(const char *s, const char *delim) {
+  if (!delim || !*delim) {
+    const char **one = (const char **)calloc(1, sizeof(const char *));
+    one[0] = _pde_dup_len(s, strlen(s));
+    _pde_arr_register(one, 1, sizeof(const char *));
+    return one;
+  }
+  size_t dlen = strlen(delim);
+  int fields = 1;
+  const char *p = s, *hit;
+  while ((hit = strstr(p, delim)) != NULL) { fields++; p = hit + dlen; }
+  const char **out = (const char **)calloc((size_t)fields, sizeof(const char *));
+  int idx = 0;
+  int lastNonEmpty = -1;
+  p = s;
+  while ((hit = strstr(p, delim)) != NULL) {
+    out[idx] = _pde_dup_len(p, (size_t)(hit - p));
+    if (out[idx][0] != '\0') lastNonEmpty = idx;
+    idx++;
+    p = hit + dlen;
+  }
+  out[idx] = _pde_dup_len(p, strlen(p));
+  if (out[idx][0] != '\0') lastNonEmpty = idx;
+  int n = lastNonEmpty + 1;          // drop trailing empty fields
+  if (n < 1) n = 1;                  // all empty -> single empty field
+  _pde_arr_register(out, (size_t)n, sizeof(const char *));
+  return out;
+}
+
+// join(arr, sep): concatenate registered String[] with sep between elements.
+static inline const char *join(const char *const *arr, const char *sep) {
+  static char *joinBufs[4];
+  static int joinIdx = 0;
+  char *out = joinBufs[joinIdx];
+  joinIdx = (joinIdx + 1) & 3;
+  if (out) free(out);
+  int n = _pde_arr_len(arr);
+  if (n < 0) n = 0;
+  size_t sepLen = sep ? strlen(sep) : 0;
+  size_t total = 1;
+  for (int i = 0; i < n; i++) total += strlen(arr[i]) + sepLen;
+  out = (char *)malloc(total);
+  if (!out) return "";
+  out[0] = '\0';
+  for (int i = 0; i < n; i++) {
+    if (i) strcat(out, sep);
+    strcat(out, arr[i]);
+  }
+  joinBufs[(joinIdx + 3) & 3] = out;
+  return out;
+}
+
+// Array utilities: append/concat/subset/shorten/reverse/splice/sort /////
+
+#define _PDE_DEF_ARRAY_OPS(T, SFX)                                      \
+  static inline T *_pde_append_##SFX(T *arr, T e) {                     \
+    int n = _pde_arr_len(arr); if (n < 0) n = 0;                        \
+    _pde_expand((void **)&arr, n + 1, sizeof(T));                       \
+    arr[n] = e;                                                         \
+    return arr;                                                         \
+  }                                                                     \
+  static inline T *_pde_shorten_##SFX(T *arr) {                         \
+    int n = _pde_arr_len(arr); if (n <= 0) return arr;                  \
+    _pde_expand((void **)&arr, n - 1, sizeof(T));                       \
+    return arr;                                                         \
+  }                                                                     \
+  static inline T *_pde_reverse_##SFX(T *arr) {                         \
+    int n = _pde_arr_len(arr); if (n < 0) n = 0;                        \
+    for (int i = 0, j = n - 1; i < j; i++, j--) {                       \
+      T t = arr[i]; arr[i] = arr[j]; arr[j] = t;                        \
+    }                                                                   \
+    return arr;                                                         \
+  }                                                                     \
+  static inline T *_pde_concat_##SFX(T *a, const T *b) {                \
+    int na = _pde_arr_len(a), nb = _pde_arr_len(b);                     \
+    if (na < 0) na = 0; if (nb < 0) nb = 0;                             \
+    _pde_expand((void **)&a, na + nb, sizeof(T));                       \
+    for (int i = 0; i < nb; i++) a[na + i] = b[i];                      \
+    return a;                                                           \
+  }                                                                     \
+  static inline T *_pde_subset_##SFX(T *arr, int start, int count) {    \
+    int n = _pde_arr_len(arr); if (n < 0) n = 0;                        \
+    if (start < 0) start = 0;                                           \
+    if (count < 0) count = n - start;                                   \
+    if (count < 0) count = 0;                                           \
+    if (start + count > n) count = n - start;                           \
+    if (count < 0) count = 0;                                           \
+    T *out = (T *)calloc((size_t)(count > 0 ? count : 1), sizeof(T));   \
+    for (int i = 0; i < count; i++) out[i] = arr[start + i];            \
+    _pde_arr_register(out, (size_t)(count > 0 ? count : 1), sizeof(T)); \
+    return out;                                                         \
+  }                                                                     \
+  static inline T *_pde_splice_##SFX(T *arr, T v, int index) {          \
+    int n = _pde_arr_len(arr); if (n < 0) n = 0;                        \
+    if (index < 0) index = 0;                                           \
+    if (index > n) index = n;                                           \
+    _pde_expand((void **)&arr, n + 1, sizeof(T));                       \
+    for (int i = n; i > index; i--) arr[i] = arr[i - 1];                \
+    arr[index] = v;                                                     \
+    return arr;                                                         \
+  }
+
+_PDE_DEF_ARRAY_OPS(float, float)
+_PDE_DEF_ARRAY_OPS(int, int)
+_PDE_DEF_ARRAY_OPS(bool, bool)
+_PDE_DEF_ARRAY_OPS(uint32_t, color)
+_PDE_DEF_ARRAY_OPS(double, double)
+_PDE_DEF_ARRAY_OPS(const char *, string)
+
+static inline int _pde_cmp_int(const void *a, const void *b) {
+  return (*(const int *)a > *(const int *)b) - (*(const int *)a < *(const int *)b);
+}
+static inline int _pde_cmp_float(const void *a, const void *b) {
+  float x = *(const float *)a, y = *(const float *)b;
+  return (x > y) - (x < y);
+}
+static inline int _pde_cmp_double(const void *a, const void *b) {
+  double x = *(const double *)a, y = *(const double *)b;
+  return (x > y) - (x < y);
+}
+static inline int _pde_cmp_color(const void *a, const void *b) {
+  return (*(const uint32_t *)a > *(const uint32_t *)b) - (*(const uint32_t *)a < *(const uint32_t *)b);
+}
+static inline int _pde_cmp_str(const void *a, const void *b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static inline void _pde_sort_int(int *arr, int n) { qsort(arr, (size_t)n, sizeof(int), _pde_cmp_int); }
+static inline void _pde_sort_float(float *arr, int n) { qsort(arr, (size_t)n, sizeof(float), _pde_cmp_float); }
+static inline void _pde_sort_double(double *arr, int n) { qsort(arr, (size_t)n, sizeof(double), _pde_cmp_double); }
+static inline void _pde_sort_color(uint32_t *arr, int n) { qsort(arr, (size_t)n, sizeof(uint32_t), _pde_cmp_color); }
+static inline void _pde_sort_string(const char **arr, int n) { qsort(arr, (size_t)n, sizeof(const char *), _pde_cmp_str); }
+
+#define append(arr, e) _Generic((arr),                                   \
+    float *: _pde_append_float, int *: _pde_append_int,                  \
+    bool *: _pde_append_bool, uint32_t *: _pde_append_color,             \
+    double *: _pde_append_double, const char **: _pde_append_string,     \
+    default: _pde_append_float)(arr, e)
+
+#define shorten(arr) _Generic((arr),                                     \
+    float *: _pde_shorten_float, int *: _pde_shorten_int,                \
+    bool *: _pde_shorten_bool, uint32_t *: _pde_shorten_color,           \
+    double *: _pde_shorten_double, const char **: _pde_shorten_string,   \
+    default: _pde_shorten_float)(arr)
+
+#define reverse(arr) _Generic((arr),                                     \
+    float *: _pde_reverse_float, int *: _pde_reverse_int,                \
+    bool *: _pde_reverse_bool, uint32_t *: _pde_reverse_color,           \
+    double *: _pde_reverse_double, const char **: _pde_reverse_string,   \
+    default: _pde_reverse_float)(arr)
+
+#define concat(a, b) _Generic((a),                                        \
+    float *: _pde_concat_float, int *: _pde_concat_int,                   \
+    bool *: _pde_concat_bool, uint32_t *: _pde_concat_color,              \
+    double *: _pde_concat_double, const char **: _pde_concat_string,      \
+    default: _pde_concat_float)(a, b)
+
+#define _SUBSET_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define subset(...) _SUBSET_CHOOSER(__VA_ARGS__, _pde_dispatch_subset3, _pde_dispatch_subset2, DUMMY)(__VA_ARGS__)
+#define _pde_dispatch_subset2(arr, start) _Generic((arr),                 \
+    float *: _pde_subset_float, int *: _pde_subset_int,                   \
+    bool *: _pde_subset_bool, uint32_t *: _pde_subset_color,              \
+    double *: _pde_subset_double, const char **: _pde_subset_string,      \
+    default: _pde_subset_float)((arr), (start), -1)
+#define _pde_dispatch_subset3(arr, start, count) _Generic((arr),          \
+    float *: _pde_subset_float, int *: _pde_subset_int,                   \
+    bool *: _pde_subset_bool, uint32_t *: _pde_subset_color,              \
+    double *: _pde_subset_double, const char **: _pde_subset_string,      \
+    default: _pde_subset_float)((arr), (start), (count))
+
+#define _SPLICE_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define splice(...) _SPLICE_CHOOSER(__VA_ARGS__, _pde_dispatch_splice3, _pde_dispatch_splice2, DUMMY)(__VA_ARGS__)
+#define _pde_dispatch_splice2(arr, value) _Generic((arr),                 \
+    float *: _pde_splice_float, int *: _pde_splice_int,                   \
+    bool *: _pde_splice_bool, uint32_t *: _pde_splice_color,              \
+    double *: _pde_splice_double, const char **: _pde_splice_string,      \
+    default: _pde_splice_float)((arr), (value), -1)
+#define _pde_dispatch_splice3(arr, value, index) _Generic((arr),          \
+    float *: _pde_splice_float, int *: _pde_splice_int,                   \
+    bool *: _pde_splice_bool, uint32_t *: _pde_splice_color,              \
+    double *: _pde_splice_double, const char **: _pde_splice_string,      \
+    default: _pde_splice_float)((arr), (value), (index))
+
+#define SORT_CHOOSER(_1, _2, NAME, ...) NAME
+#define sort(...) SORT_CHOOSER(__VA_ARGS__, _pde_dispatch_sort3, _pde_dispatch_sort2, DUMMY)(__VA_ARGS__)
+#define _pde_dispatch_sort2(arr) _pde_dispatch_sort3((arr), _pde_len(arr))
+#define _pde_dispatch_sort3(arr, count) _Generic((arr),                   \
+    float *: _pde_sort_float, int *: _pde_sort_int,                       \
+    bool *: _pde_sort_float, uint32_t *: _pde_sort_color,                 \
+    double *: _pde_sort_double, const char **: _pde_sort_string,          \
+    default: _pde_sort_float)((arr), (count))
 
 // pixels ////////////////////////////////////////////
 
@@ -1116,6 +1577,48 @@ static inline void pimage_save(PImage *img, const char *path) {
   ExportImage(*img, path);
 }
 
+// PImage get(): single-pixel color (uint32 packed ABGR, same as color()/pixels)
+static inline uint32_t pimage_get_px(PImage *img, int x, int y) {
+  if (!img->data || x < 0 || y < 0 || x >= img->width || y >= img->height) {
+    fprintf(stderr, "processing.h: get(%d,%d) out of bounds on %dx%d\n",
+            x, y, img->width, img->height);
+    return 0xFF000000u; // opaque black
+  }
+  uint8_t *px = (uint8_t *)img->data;
+  px = px + ((size_t)y * img->width + (size_t)x) * 4;
+  return ((uint32_t)px[3] << 24) | ((uint32_t)px[2] << 16) |
+         ((uint32_t)px[1] << 8) | (uint32_t)px[0];
+}
+
+// get() -> copy of the whole image (Processing returns a PImage)
+static inline PImage pimage_get_copy(PImage *img) {
+  Image c = ImageCopy(*img);
+  ImageFormat(&c, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+  return c;
+}
+
+// get(x, y, w, h) -> rectangular copy
+static inline PImage pimage_get_region(PImage *img, int x, int y, int w, int h) {
+  if (w <= 0) w = img->width - x;
+  if (h <= 0) h = img->height - y;
+  int rx = x < 0 ? 0 : x;
+  int ry = y < 0 ? 0 : y;
+  int rw = (rx + w > img->width) ? img->width - rx : w;
+  int rh = (ry + h > img->height) ? img->height - ry : h;
+  if (rw < 1) rw = 1;
+  if (rh < 1) rh = 1;
+  Image sub = GenImageColor(rw, rh, BLANK);
+  uint8_t *src = (uint8_t *)img->data;
+  uint8_t *dst = (uint8_t *)sub.data;
+  for (int yy = 0; yy < rh; yy++)
+    for (int xx = 0; xx < rw; xx++) {
+      uint8_t *s = src + (((size_t)(ry + yy) * img->width + (size_t)(rx + xx)) * 4);
+      uint8_t *d = dst + (((size_t)yy * rw + (size_t)xx) * 4);
+      d[0]=s[0]; d[1]=s[1]; d[2]=s[2]; d[3]=s[3];
+    }
+  return sub;
+}
+
 // transformations (basic) /////////////////////////////////////////////////////
 
 static inline void pushMatrix(void) { rlPushMatrix(); }
@@ -1195,6 +1698,14 @@ static inline void noStroke(void) { _useStroke = false; }
 
 static inline void strokeWeight(float weight) {
   _strokeW = weight;
+}
+
+static inline void strokeCap(int cap) {
+  _strokeCap = cap;
+}
+
+static inline void strokeJoin(int join) {
+  _strokeJoin = join;
 }
 
 
@@ -1404,10 +1915,58 @@ static inline void bezier(float x1, float y1, float x2, float y2,
   }
 }
 
+// bezierPoint / bezierTangent: pure cubic-bezier evaluation (Processing API)
+static inline float bezierPoint(float a, float b, float c, float d, float t) {
+  float mt = 1.0f - t;
+  return mt*mt*mt*a + 3.0f*mt*mt*t*b + 3.0f*mt*t*t*c + t*t*t*d;
+}
+static inline float bezierTangent(float a, float b, float c, float d, float t) {
+  return (3.0f*t*t*(-a+3.0f*b-3.0f*c+d) +
+          6.0f*t*(a-2.0f*b+c) + 3.0f*(b-a));
+}
+
+// Catmull-Rom spline (curvePoint / curveTangent / curveTightness / curve()).
+// curveTightness is accepted for compatibility but the curve basis keeps the
+// default 0 tightness; curvePoint uses Processing's canonical formula.
+static float _curveTightness = 0.0f;
+static inline void curveTightness(float s) { _curveTightness = s; }
+
+static inline float curvePoint(float a, float b, float c, float d, float t) {
+  float tt = t * t;
+  float ttt = t * tt;
+  return 0.5f * ((2.0f * b) + (-a + c) * t +
+                 (2.0f * a - 5.0f * b + 4.0f * c - d) * tt +
+                 (-a + 3.0f * b - 3.0f * c + d) * ttt);
+}
+
+static inline float curveTangent(float a, float b, float c, float d, float t) {
+  float tt = t * t;
+  float s1 = (2.0f * a - 5.0f * b + 4.0f * c - d);
+  float s2 = (-a + 3.0f * b - 3.0f * c + d);
+  return 0.5f * ((-a + c) + 2.0f * s1 * t + 3.0f * s2 * tt);
+}
+
+// curve(x1,y1, x2,y2, x3,y3, x4,y4): draws the Catmull-Rom segment between
+// points 2 and 3 (points 1 and 4 are the enclosing control points), sampled
+// into polyline segments the same way bezier() is.
+static inline void curve(float x1, float y1, float x2, float y2,
+                        float x3, float y3, float x4, float y4) {
+  if (!_useStroke) return;
+  const int steps = 32;
+  float px = x2, py = y2;
+  for (int i = 1; i <= steps; i++) {
+    float t = (float)i / (float)steps;
+    float cx = curvePoint(x1, x2, x3, x4, t);
+    float cy = curvePoint(y1, y2, y3, y4, t);
+    DrawLineEx((Vector2){ px, py }, (Vector2){ cx, cy }, _strokeW, _strokeColor);
+    px = cx; py = cy;
+  }
+}
+
 // polygon engine (beginShape / vertex / endShape) //////////////////////////////////////
 
 static inline void beginShape1(int mode) {
-  (void)mode;
+  _shapeMode = (mode >= POINTS && mode <= POLYGON) ? mode : POLYGON;
   _shapeVertCount = 0;
   _shapeModeClose = 0;
 }
@@ -1470,6 +2029,67 @@ static inline bool _pointInTri(Vector2 p, Vector2 a, Vector2 b, Vector2 c) {
 static void _endShapeDraw(void) {
   int n = _shapeVertCount;
   if (n < 2) { _shapeVertCount = -1; return; }
+  int mode = _shapeMode;
+
+  // vertex modes wider than POLYGON: draw points/lines/triangles/quads
+  // directly (stroke = edges when both set, else fill).
+  if (mode == POINTS) {
+    for (int i = 0; i < n; i++) {
+      float r = _strokeW > 0.0f ? _strokeW : 1.0f;
+      if (_useFill) DrawCircleV(_shapeVerts[i], r, _fillColor);
+      else if (_useStroke) DrawCircleV(_shapeVerts[i], r, _strokeColor);
+    }
+    _shapeVertCount = -1;
+    return;
+  }
+  if (mode == LINES) {
+    for (int i = 0; i + 1 < n; i += 2)
+      DrawLineEx(_shapeVerts[i], _shapeVerts[i + 1], _strokeW, _strokeColor);
+    _shapeVertCount = -1;
+    return;
+  }
+  if (mode == TRIANGLES || mode == TRIANGLE_STRIP || mode == TRIANGLE_FAN) {
+    for (int i = 0; i + 2 < n; i++) {
+      if (mode == TRIANGLES && (i % 3) != 0) continue;
+      if (mode == TRIANGLE_FAN && i > 0 && i + 2 < n) {
+        Vector2 a = _shapeVerts[0], b = _shapeVerts[i], c = _shapeVerts[i + 1];
+        if (_useFill) DrawTriangle(a, b, c, _fillColor);
+        if (_useStroke) {
+          DrawLineEx(a, b, _strokeW, _strokeColor);
+          DrawLineEx(b, c, _strokeW, _strokeColor);
+        }
+        continue;
+      }
+      Vector2 a = _shapeVerts[i], b = _shapeVerts[i + 1], c = _shapeVerts[i + 2];
+      if (_useFill) DrawTriangle(a, b, c, _fillColor);
+      if (_useStroke) {
+        DrawLineEx(a, b, _strokeW, _strokeColor);
+        DrawLineEx(b, c, _strokeW, _strokeColor);
+        DrawLineEx(c, a, _strokeW, _strokeColor);
+      }
+    }
+    _shapeVertCount = -1;
+    return;
+  }
+  if (mode == QUADS || mode == QUAD_STRIP) {
+    int step = (mode == QUADS) ? 4 : 2;
+    for (int i = 0; i + 3 < n; i += step) {
+      Vector2 a = _shapeVerts[i], b = _shapeVerts[i + 1];
+      Vector2 c = _shapeVerts[i + 3], d = _shapeVerts[i + 2];
+      if (_useFill) {
+        DrawTriangle(a, b, c, _fillColor);
+        DrawTriangle(a, c, d, _fillColor);
+      }
+      if (_useStroke) {
+        DrawLineEx(a, b, _strokeW, _strokeColor);
+        DrawLineEx(b, d, _strokeW, _strokeColor);
+        DrawLineEx(d, c, _strokeW, _strokeColor);
+        DrawLineEx(c, a, _strokeW, _strokeColor);
+      }
+    }
+    _shapeVertCount = -1;
+    return;
+  }
 
   if (_useStroke) {
     for (int i = 0; i < n - 1; i++) {
@@ -1595,10 +2215,52 @@ static inline uint32_t lerpColor(uint32_t c1, uint32_t c2, float amt) {
   return _packRGBA(r, g, b, a);
 }
 
+// hex / unhex: color <-> hex-string conversion
+static inline const char *hex(uint32_t c) {
+  static char buf[16];
+  snprintf(buf, sizeof(buf), "#%02X%02X%02X%02X", alpha(c), red(c), green(c), blue(c));
+  return buf;
+}
+static inline uint32_t unhex(const char *s) {
+  return (uint32_t)strtoul(s, NULL, 16);
+}
+
+// blendColor (blend mode arg accepted; BLEND/ADD approximated) ////////////
+enum {
+  BLEND = 1, ADD = 2, SUBTRACT = 3, DARKEST = 4, LIGHTEN = 5,
+  DIFFERENCE = 6, EXCLUSION = 7, MULTIPLY = 8, SCREEN = 9, OVERLAY = 10,
+  HARD_LIGHT = 11, SOFT_LIGHT = 12, DODGE = 13, BURN = 14
+};
+static inline uint32_t blendColor(uint32_t c1, uint32_t c2, int mode) {
+  switch (mode) {
+    case ADD: {
+      int r = red(c1) + red(c2), g = green(c1) + green(c2);
+      int b = blue(c1) + blue(c2), a = alpha(c1) + alpha(c2);
+      if (r > 255) r = 255; if (g > 255) g = 255;
+      if (b > 255) b = 255; if (a > 255) a = 255;
+      return _packRGBA(r, g, b, a);
+    }
+    default:
+      return c1;
+  }
+}
+static inline void blendMode(int mode) { (void)mode; }
+
 // math //////////////////////////////////////////////////////////////////////////////////
 
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 #define max(a, b) (((a) > (b)) ? (a) : (b))
+
+// round/floor/ceil: Processing's float versions (float in, float out)
+static inline float _pde_roundf(float v) { return floorf(v + 0.5f); }
+static inline int _pde_roundi(int v) { return v; }
+#define round(X) _Generic((X), int: _pde_roundi, default: _pde_roundf)(X)
+static inline float _pde_floorf(float v) { return floorf(v); }
+static inline int _pde_floori(int v) { return v; }
+#define floor(X) _Generic((X), int: _pde_floori, default: _pde_floorf)(X)
+static inline float _pde_ceilf(float v) { return ceilf(v); }
+static inline int _pde_ceili(int v) { return v; }
+#define ceil(X) _Generic((X), int: _pde_ceili, default: _pde_ceilf)(X)
 
 static inline float constrain(float amt, float low, float high) {
   return (amt < low) ? low : ((amt > high) ? high : amt);
@@ -1694,6 +2356,23 @@ static inline void applyMatrix(PMatrix m) {
 // looks down -z from a distance proportional to the object size).
 static int _sphereDetail = 24;
 
+// camera() state: applied inside _pde_begin3d so box()/sphere() keep view
+static bool _customCameraSet = false;
+static Vector3 _camEye, _camCenter, _camUpChosen;
+
+static inline void camera0(void) { _customCameraSet = false; }
+static inline void camera9(float eyeX, float eyeY, float eyeZ,
+                           float centerX, float centerY, float centerZ,
+                           float upX, float upY, float upZ) {
+  _customCameraSet = true;
+  _camEye = (Vector3){ eyeX, eyeY, eyeZ };
+  _camCenter = (Vector3){ centerX, centerY, centerZ };
+  _camUpChosen = (Vector3){ upX, upY, upZ };
+}
+
+#define CAMERA_CHOOSER(_1, _2, _3, _4, _5, _6, _7, _8, _9, NAME, ...) NAME
+#define camera(...) CAMERA_CHOOSER(__VA_ARGS__, camera9, DUMMY, DUMMY, DUMMY, DUMMY, DUMMY, DUMMY, DUMMY, DUMMY, DUMMY)(__VA_ARGS__)
+
 static inline void _pde_begin3d(float radius) {
   rlDrawRenderBatchActive(); // flush queued 2D verts before swapping proj
   float aspect = (float)width / (float)(height > 0 ? height : 1);
@@ -1704,8 +2383,14 @@ static inline void _pde_begin3d(float radius) {
   Matrix mv = rlGetMatrixModelview();
   rlPushMatrix();
   rlLoadIdentity();
-  rlMultMatrixf((float *)&mv);   // keep the sketch's translate/rotate stack
-  rlTranslatef(0.0f, 0.0f, -camZ);
+  if (_customCameraSet) {
+    Matrix view = MatrixLookAt(_camEye, _camCenter, _camUpChosen);
+    rlMultMatrixf((float *)&view);
+    rlMultMatrixf((float *)&mv);   // keep the sketch's translate/rotate stack
+  } else {
+    rlMultMatrixf((float *)&mv);   // keep the sketch's translate/rotate stack
+    rlTranslatef(0.0f, 0.0f, -camZ);
+  }
 }
 
 static inline void _pde_end3d(void) {
@@ -1727,6 +2412,30 @@ static inline void sphere(float r) {
   if (_useStroke) DrawSphereWires(c, r, _sphereDetail, _sphereDetail, _strokeColor);
   _pde_end3d();
 }
+
+// box(w, h, d) / box(size): axis-aligned cube under the same temporary
+// perspective projection as sphere(); the size drives the camera distance.
+static inline void box3(float w, float h, float d) {
+  if (!_useFill && !_useStroke) return;
+  float r = 0.5f * sqrtf(w * w + h * h + d * d);
+  _pde_begin3d(r > 0.01f ? r : 1.0f);
+  Vector3 c = { 0.0f, 0.0f, 0.0f };
+  if (_useFill) DrawCube(c, w, h, d, _fillColor);
+  if (_useStroke) DrawCubeWires(c, w, h, d, _strokeColor);
+  _pde_end3d();
+}
+static inline void box1(float s) { box3(s, s, s); }
+
+#define BOX_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define box(...) BOX_CHOOSER(__VA_ARGS__, box3, DUMMY, box1, DUMMY)(__VA_ARGS__)
+
+// normal(nx, ny, nz) / normal(nx, ny) — recorded for lighting; harmless no-op
+// in a flat-shaded renderer (kept so beginShape(RENDER) sketches parse).
+static inline void normal3(float nx, float ny, float nz) { (void)nx; (void)ny; (void)nz; }
+static inline void normal2(float nx, float ny) { normal3(nx, ny, 0.0f); }
+
+#define NORMAL_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define normal(...) NORMAL_CHOOSER(__VA_ARGS__, normal3, normal2, DUMMY)(__VA_ARGS__)
 
 // Vector math /////////////////////////////////////////////////////////////////////////////////
 
