@@ -1,0 +1,129 @@
+#!/bin/sh
+# pdecc — one-shot Processing-to-Raylib compiler CLI.
+#
+# Transpile + compile a .pde sketch into an optimized native binary in one
+# step, using the pde2c transpiler and the processing.h single-header runtime.
+# Submitted as a single source file or a sketch directory (multi-tab), the
+# resulting binary is written next to the sketch source by default.
+#
+#   ./pdecc                       sketch in current directory
+#   ./pdecc sketch.pde            single-file sketch
+#   ./pdecc ~/path/to/sketch      sketch directory (all .pde tabs together)
+#   ./pdecc -o bin sketch.pde     write binary to "bin" instead
+#   ./pdecc -O0 sketch.pde        override default -O2 optimization
+#   ./pdecc -n sketch.pde         build only (do not run)
+#   ./pdecc --keep sketch.pde     keep the tmp build dir
+#
+# Exit status: 0 on success, non-zero on transpile/compile failure.
+set -u
+
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+
+OPT="2"           # default optimization level (no leading 'O')
+OUT=""            # explicit -o output path (default: next to source)
+RUN=1             # run after building unless -n
+KEEP=0            # keep tmp dir when --keep
+
+# ---- argument parsing -----------------------------------------------------
+TARGET=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) shift; [ $# -eq 0 ] && { echo "pdecc: -o needs a path" >&2; exit 1; }
+        OUT="$1";;
+    -O|-O0|-O1|-O2|-O3|-Os) OPT="${1#-O}";;
+    -n|--no-run) RUN=0;;
+    --keep) KEEP=1;;
+    -h|--help)
+        sed -n '2,16p' "$0"; exit 0;;
+    -*) echo "pdecc: unknown option: $1" >&2; exit 1;;
+    *)  [ -n "$TARGET" ] && { echo "pdecc: too many arguments: $1" >&2; exit 1; }
+        TARGET="$1";;
+  esac
+  shift
+done
+
+# ---- resolve target: dir, .pde file, or current dir -----------------------
+if [ -z "$TARGET" ]; then
+  TARGET=$(pwd)
+fi
+TARGET=$(realpath "$TARGET")
+
+if [ -d "$TARGET" ]; then
+  SKETCH_DIR="$TARGET"
+  MAIN_PDE="$SKETCH_DIR/$(basename "$SKETCH_DIR").pde"
+  if [ ! -f "$MAIN_PDE" ]; then
+    echo "pdecc: expected main tab $MAIN_PDE (folder name must match the main .pde)" >&2
+    exit 1
+  fi
+  BNAME=$(basename "$SKETCH_DIR")
+elif [ -f "$TARGET" ] && [ "${TARGET##*.}" = "pde" ]; then
+  MAIN_PDE="$TARGET"
+  SKETCH_DIR=$(dirname "$MAIN_PDE")
+  BNAME=$(basename "$MAIN_PDE" .pde)
+else
+  echo "pdecc: invalid target: $TARGET (expected a .pde file or a sketch directory)" >&2
+  exit 1
+fi
+
+OUT="${OUT:-$SKETCH_DIR/$BNAME}"
+
+# ---- build dir -------------------------------------------------------------
+TMP=$(mktemp -d /tmp/pdecc.XXXXXX)
+cleanup() { [ "$KEEP" = "1" ] || rm -rf "$TMP"; }
+trap cleanup EXIT INT TERM
+
+# rebuild transpiler only when its source changed
+if [ "$SCRIPT_DIR/pde2c.c" -nt "$SCRIPT_DIR/pde2c" ] || [ ! -x "$SCRIPT_DIR/pde2c" ]; then
+  gcc "$SCRIPT_DIR/pde2c.c" -o "$SCRIPT_DIR/pde2c" || exit 1
+fi
+
+# rebuild precompiled header only when processing.h got newer; skip re-parsing
+# raylib/rlgl/raymath on every compile (cuts turnaround from ~3s to ~0.2s).
+if [ "$SCRIPT_DIR/processing.h" -nt "$SCRIPT_DIR/processing.h.gch" ] || \
+   [ ! -f "$SCRIPT_DIR/processing.h.gch" ]; then
+  if ! gcc -I"$SCRIPT_DIR" -x c-header "$SCRIPT_DIR/processing.h" \
+       -o "$SCRIPT_DIR/processing.h.gch" 2>/dev/null; then
+    rm -f "$SCRIPT_DIR/processing.h.gch"   # stale/broken PCH: fall back to
+  fi                                       # slow path (never fatal)
+fi
+
+# ---- merge tabs: main tab first, then the rest alphabetically -------------
+{
+  printf '//@file %s\n' "$(basename "$MAIN_PDE")"
+  cat "$MAIN_PDE"
+  for f in $(find "$SKETCH_DIR" -maxdepth 1 -name '*.pde' | sort); do
+    [ "$f" = "$MAIN_PDE" ] && continue
+    printf '//@file %s\n' "$(basename "$f")"
+    cat "$f"
+  done
+} > "$TMP/combined.pde"
+
+if ! grep -q '[^[:space:]]' "$TMP/combined.pde"; then
+  echo "pdecc: no .pde content found in $SKETCH_DIR" >&2
+  exit 1
+fi
+
+# copy runtime resources so font loading resolves from the build dir
+cp "$SCRIPT_DIR/terminus.ttf" "$TMP/terminus.ttf" 2>/dev/null || true
+
+# ---- transpile -------------------------------------------------------------
+if ! "$SCRIPT_DIR/pde2c" "$TMP/combined.pde" > "$TMP/sketch.c" 2> "$TMP/pde2c.err"; then
+  echo "pdecc: transpile failed for $BNAME" >&2
+  cat "$TMP/pde2c.err" >&2
+  exit 1
+fi
+
+# ---- compile to an optimized native binary ---------------------------------
+if ! gcc -O"$OPT" -I"$SCRIPT_DIR" "$TMP/sketch.c" -o "$OUT" \
+     -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 2> "$TMP/gcc.err"; then
+  echo "pdecc: compilation failed for $BNAME" >&2
+  head -20 "$TMP/gcc.err" >&2
+  if [ "$KEEP" = "1" ]; then
+    echo "pdecc: kept build dir $TMP (set --keep or PDE_KEEP=1 to inspect)" >&2
+  fi
+  exit 1
+fi
+
+echo "pdecc: built $OUT"
+[ "$RUN" = "1" ] && (cd "$SKETCH_DIR" && exec "$OUT")
+exit 0

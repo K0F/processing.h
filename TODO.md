@@ -64,10 +64,13 @@ A zero-dependency, immediate-mode creative coding sandbox for pure C, powered by
 
 ---
 
+## One-Shot Compiler CLI (`pdecc`)
+- [x] **One-shot compiler CLI:** unified `./pdecc` script transpiles + compiles a
+  `.pde` sketch (single file, directory, or cwd) into an optimized native
+  binary next to the source, using the precompiled header for ~0.7s turnaround.
+  Flags: `-o <bin>`, `-O<N>`, `-n/--no-run`, `--keep`.
+
 ## Next Steps (Unfinished)
-- [ ] **One-Shot Compiler CLI (`pdecc`):**
-  - Consolidate the `run` / `pp2c` wrapper scripts into a unified shell execution script.
-  - Usage goal: `./pdecc sketch.pde` yields an optimized native binary in less than half a second.
 - [ ] **Inheritance & generics / type parameters** (`extends`, `<T>`).
 - [ ] **Exception handling:** `try/catch`.
 - [ ] **More `String` methods:** `indexOf`, `substring`, `toLowerCase`, `toUpperCase`, `replace`, ...

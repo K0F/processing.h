@@ -49,6 +49,21 @@ PDE_KEEP=1 ./run         # keep the tmp dir to inspect generated C
 PDE_NOPCH=1 ./run        # ignore the precompiled header (fallback)
 ```
 
+For building an optimized binary rather than an ephemeral run, use `pdecc`.
+It transpiles + compiles a sketch into a native binary written next to the
+source, reuses the precompiled header and only rebuilds the transpiler when it
+changes (turnaround ≈ 0.7s):
+
+```sh
+./pdecc                        # sketch in current directory
+./pdecc ~/path/to/sketch.pde   # single-file sketch -> ./basename binary
+./pdecc ~/path/to/sketch_dir   # multi-tab sketch dir -> dir/name binary
+./pdecc -o mybin sketch.pde    # write the binary to a specific path
+./pdecc -O0 sketch.pde         # default -O2, switch to -O0/-O1/-O3/...
+./pdecc -n sketch.pde          # build only, do not run
+./pdecc --keep sketch.pde      # keep the tmp build dir on failure
+```
+
 ## Testing against real-world corpora
 
 Two batch tools check every sketch directory under a tree (tabs merged
