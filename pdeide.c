@@ -127,6 +127,130 @@ static Font font;
 static float fs = 12.0f;            /* pixel font size (crisp with POINT filter) */
 static float line_h, char_w;        /* integer glyph metrics, set after load */
 
+/* ------------------------------------------------------------------ */
+/* olive dark palette                                                  */
+/* ------------------------------------------------------------------ */
+#define OL_BG      ((Color){16, 18, 14, 255})   /* window backdrop       */
+#define OL_CON     ((Color){13, 15, 11, 255})   /* console / lower pane  */
+#define OL_ED      ((Color){24, 28, 21, 255})   /* editor background     */
+#define OL_TB      ((Color){33, 38, 29, 255})   /* toolbar               */
+#define OL_LINE    ((Color){50, 57, 42, 255})   /* current line          */
+#define OL_SEL     ((Color){72, 98, 48, 210})   /* selection             */
+#define OL_GUTTER  ((Color){116, 124, 100, 255})
+#define OL_TEXT    ((Color){225, 228, 210, 255})
+#define OL_DIM     ((Color){150, 156, 132, 255})
+#define OL_FAINT   ((Color){92, 98, 80, 255})
+#define OL_EDGE    ((Color){56, 62, 46, 255})   /* separating lines      */
+#define OL_SHADOW  ((Color){8, 10, 7, 255})     /* 1px drop shadow under lines/btns */
+#define OL_BTN     ((Color){61, 74, 47, 255})   /* steady button         */
+#define OL_BTNH    ((Color){74, 89, 57, 255})   /* hover button          */
+#define OL_RUN     ((Color){44, 88, 40, 255})
+#define OL_RUNH    ((Color){58, 112, 50, 255})
+#define OL_STOP    ((Color){40, 56, 42, 255})
+#define OL_STOPH   ((Color){88, 64, 40, 255})
+#define OL_CURSOR  ((Color){196, 202, 180, 255})
+#define OL_ERRBAR  ((Color){200, 84, 74, 255})
+#define OL_ERRBG   ((Color){56, 34, 30, 200})
+#define OL_KW      ((Color){163, 214, 168, 255})   /* keywords: light olive-green */
+#define OL_STR     ((Color){226, 196, 150, 255})   /* strings:  warm tan          */
+#define OL_NUM     ((Color){150, 205, 192, 255})   /* numbers:  pale teal         */
+#define OL_COM     ((Color){116, 126, 94, 255})    /* comments: muted olive       */
+
+/* ------------------------------------------------------------------ */
+/* editor syntax highlighting                                          */
+/* ------------------------------------------------------------------ */
+typedef enum { CTXT_NORM, CTXT_STR, CTXT_NUM, CTXT_KW, CTXT_COM } CodeT;
+
+static const char *kws[] = {
+  "abstract","boolean","break","byte","case","catch","char","class","color","const",
+  "continue","default","do","double","else","enum","extends","final","finally","float",
+  "for","if","implements","import","instanceof","int","interface","long","native","new",
+  "package","private","protected","public","return","short","static","strictfp","super",
+  "switch","synchronized","this","throw","throws","transient","try","void","volatile","while",
+  "true","false","null","PVector","String","PImage","PGraphics","ArrayList","M_PI",
+  "settings","setup","draw","println","print","size","width","height","frameRate",
+  "millis","random","noise","map","constrain","color","stroke","noStroke","fill",
+  "noFill","strokeWeight","line","rect","ellipse","circle","square","triangle","quad",
+  "arc","point","text","textSize","textAlign","loadImage","image","loadPixels",
+  "updatePixels","beginShape","endShape","vertex","translate","rotate","scale",
+  "pushMatrix","popMatrix","mouseX","mouseY","pmouseX","pmouseY","key","keyCode",
+  "keyPressed","mousePressed","mouseReleased","mouseDragged","mouseMoved","mouseWheel",
+  "noLoop","loop","redraw","exit", NULL };
+
+typedef struct { int col; int len; CodeT t; } Run;
+
+/* Classify a line into colored runs. `col` is the running byte column (starts
+ * at the byte offset of *str within the line/buffer); *in_comment carries the
+ * `/* ... *​/` state across lines. Each run advances `col` by its byte length. */
+static void hl_line(const char *str, int len, int *col, bool *in_comment,
+                    Run *runs, int *nruns, int maxruns) {
+  int i = 0;
+  while (i < len) {
+    int s = i;
+    CodeT t = CTXT_NORM;
+
+    if (*in_comment) {
+      t = CTXT_COM;
+      while (i < len) {
+        if (str[i]=='*' && i+1<len && str[i+1]=='/') { i += 2; *in_comment = false; break; }
+        i++;
+      }
+    }
+    else if (str[i]=='/' && i+1<len && str[i+1]=='/') {
+      t = CTXT_COM; i = len;                          /* line comment */
+    }
+    else if (str[i]=='/' && i+1<len && str[i+1]=='*') {
+      t = CTXT_COM; i += 2; *in_comment = true;
+      while (i < len) {
+        if (str[i]=='*' && i+1<len && str[i+1]=='/') { i += 2; *in_comment = false; break; }
+        i++;
+      }
+    }
+    else if (str[i]=='"' || str[i]=='\'') {
+      char q = str[i]; t = CTXT_STR; i++;
+      while (i < len) {
+        if (str[i]=='\\' && i+1<len) { i += 2; continue; }
+        if (str[i]==q) { i++; break; }
+        i++;
+      }
+    }
+    else if ((str[i]>='0' && str[i]<='9') ||
+             (str[i]=='.' && i+1<len && str[i+1]>='0' && str[i+1]<='9')) {
+      t = CTXT_NUM;
+      unsigned char c;
+      if (str[i]=='0' && i+1<len && (str[i+1]=='x'||str[i+1]=='X')) {     /* hex */
+        i += 2;
+        while (i < len && ((c=str[i], (c>='0'&&c<='9')||(c>='a'&&c<='f')||(c>='A'&&c<='F')))) i++;
+      } else {
+        while (i < len && (c=str[i], c>='0'&&c<='9')) i++;
+        if (i+1<len && str[i]=='.' && str[i+1]>='0' && str[i+1]<='9') {   /* fraction */
+          i++;
+          while (i < len && (c=str[i], c>='0'&&c<='9')) i++;
+        }
+        if (i < len && (str[i]=='e'||str[i]=='E')) {                      /* exponent */
+          i++;
+          if (i < len && (str[i]=='+'||str[i]=='-')) i++;
+          while (i < len && (c=str[i], c>='0'&&c<='9')) i++;
+        }
+      }
+    }
+    else if ((str[i]>='a'&&str[i]<='z') || (str[i]>='A'&&str[i]<='Z') || str[i]=='_') {
+      t = CTXT_KW;
+      while (i < len && ((str[i]>='a'&&str[i]<='z')||(str[i]>='A'&&str[i]<='Z')||
+                         (str[i]>='0'&&str[i]<='9')||str[i]=='_')) i++;
+      if (t == CTXT_KW) {                 /* verify it is a real keyword */
+        int wl = i - s; int isk = 0;
+        for (int k = 0; kws[k]; k++) if ((int)strlen(kws[k])==wl && strncmp(kws[k], str+s, (size_t)wl)==0) { isk = 1; break; }
+        if (!isk) t = CTXT_NORM;
+      }
+    }
+    else { *col += 1; i++; continue; }    /* punctuation: single default char */
+
+    if (*nruns < maxruns) { runs[*nruns].col = *col; runs[*nruns].len = i - s; runs[*nruns].t = t; (*nruns)++; }
+    *col += (i - s);
+  }
+}
+
 typedef struct {
   char  *buf; size_t cap, len;
   size_t cur;            /* cursor byte offset */
@@ -205,6 +329,24 @@ static size_t ed_line_len(int li) {
   return e - s;
 }
 static int ed_lines(void) { ed_ensure_lines(); return ed.line_count; }
+
+/* per-line block-comment-on state (recomputed each frame) so a multi-line
+ * block comment keeps its color across the visible window */
+static bool *hl_com = NULL;
+static int   hl_com_n = 0;
+
+static void hl_sweep(int nlines) {
+  if (nlines > hl_com_n) {
+    hl_com = realloc(hl_com, (size_t)nlines * sizeof(bool));
+    hl_com_n = nlines;
+  }
+  bool ic = false;
+  for (int li = 0; li < nlines; li++) {
+    hl_com[li] = ic;
+    int col = 0; Run r[8]; int nr = 0;
+    hl_line(ed.buf + ed_line_start(li), (int)ed_line_len(li), &col, &ic, r, &nr, 8);
+  }
+}
 
 static int ed_col_of(size_t off) { return (int)(off - ed_line_start(ed_line_of(off))); }
 
@@ -758,7 +900,8 @@ static void frame(void) {
 
   /* ---------------- toolbar ---------------- */
   const int tb = 24;
-  DrawRectangle(0, 0, w, tb, (Color){ 34, 34, 38, 255 });
+  DrawRectangle(0, 0, w, tb, OL_TB);
+  DrawLine(0, tb-1, w, tb-1, OL_EDGE);   /* 1px under-toolbar line */
 
   /* filename / dirty indicator */
   {
@@ -767,27 +910,35 @@ static void frame(void) {
     const char *p = ed.path[0] ? ed.path : "unnamed.pde";
     const char *sl = strrchr(p, '/'); if (sl) base = sl+1; else base = p;
     snprintf(title, sizeof title, "%s%s", base, ed.dirty ? " *" : "");
-    DrawTextEx(font, title, (Vector2){ 6, 5 }, fs, 0.0f, (Color){ 220,220,220,255 });
+    DrawTextEx(font, title, (Vector2){ 6, 5 }, fs, 0.0f, OL_TEXT);
   }
 
   /* run / stop buttons */
   Rectangle runb = { 170, 2, 50, 20 };
   Rectangle stopb = { 226, 2, 50, 20 };
   if (state == ST_IDLE || state == ST_BUILD) {
-    if (CheckCollisionPointRec(GetMousePosition(), runb)) DrawRectangleRec(runb, (Color){28,120,48,255});
-    else DrawRectangleRec(runb, (Color){22,90,38,255});
-    DrawTextEx(font, "Run", (Vector2){runb.x+18, 4}, fs, 0.0f, WHITE);
+    if (CheckCollisionPointRec(GetMousePosition(), runb)) DrawRectangleRec(runb, OL_RUNH);
+    else DrawRectangleRec(runb, OL_RUN);
+    DrawLine(runb.x, runb.y+runb.height, runb.x+runb.width, runb.y+runb.height, OL_SHADOW);
+    DrawLine(runb.x, runb.height+1, runb.x+runb.width, runb.height+1, OL_SHADOW);
+    DrawTextEx(font, "Run", (Vector2){runb.x+18, 4}, fs, 0.0f, (Color){215,232,200,255});
     if (IsMouseButtonPressed(0) && CheckCollisionPointRec(GetMousePosition(), runb) && state == ST_IDLE) {
       start_run();
     }
-    DrawRectangleRec(stopb, (Color){70,70,74,255});
-    DrawTextEx(font, "Stop", (Vector2){stopb.x+15, 4}, fs, 0.0f, (Color){150,150,150,255});
+    DrawRectangleRec(stopb, OL_STOP);
+    DrawLine(stopb.x, stopb.y+stopb.height, stopb.x+stopb.width, stopb.y+stopb.height, OL_SHADOW);
+    DrawLine(stopb.x, stopb.height+1, stopb.x+stopb.width, stopb.height+1, OL_SHADOW);
+    DrawTextEx(font, "Stop", (Vector2){stopb.x+15, 4}, fs, 0.0f, OL_DIM);
   } else { /* running */
-    DrawRectangleRec(runb, (Color){70,70,74,255});
-    DrawTextEx(font, "Run", (Vector2){runb.x+18, 4}, fs, 0.0f, (Color){150,150,150,255});
-    if (CheckCollisionPointRec(GetMousePosition(), stopb)) DrawRectangleRec(stopb, (Color){140,40,40,255});
-    else DrawRectangleRec(stopb, (Color){110,32,32,255});
-    DrawTextEx(font, "Stop", (Vector2){stopb.x+15, 4}, fs, 0.0f, WHITE);
+    DrawRectangleRec(runb, OL_STOP);
+    DrawLine(runb.x, runb.y+runb.height, runb.x+runb.width, runb.y+runb.height, OL_SHADOW);
+    DrawLine(runb.x, runb.height+1, runb.x+runb.width, runb.height+1, OL_SHADOW);
+    DrawTextEx(font, "Run", (Vector2){runb.x+18, 4}, fs, 0.0f, OL_DIM);
+    if (CheckCollisionPointRec(GetMousePosition(), stopb)) DrawRectangleRec(stopb, OL_STOPH);
+    else DrawRectangleRec(stopb, (Color){124,54,36,255});
+    DrawLine(stopb.x, stopb.y+stopb.height, stopb.x+stopb.width, stopb.y+stopb.height, OL_SHADOW);
+    DrawLine(stopb.x, stopb.height+1, stopb.x+stopb.width, stopb.height+1, OL_SHADOW);
+    DrawTextEx(font, "Stop", (Vector2){stopb.x+15, 4}, fs, 0.0f, (Color){230,215,200,255});
     if (IsMouseButtonPressed(0) && CheckCollisionPointRec(GetMousePosition(), stopb)) stop_sketch();
   }
 
@@ -800,24 +951,27 @@ static void frame(void) {
   bx += 50;
   if (ButtonLike("SaveAs", bx, 2, 58, &dummy)) cmd_save_as();
 
-  /* status text right-aligned */
+  /* status text right-aligned (with a permanent ALPHA release tag) */
   {
     const char *st;
     Color c;
     switch (state) {
-      case ST_IDLE:   st = "Idle"; c = (Color){160,200,160,255}; break;
-      case ST_BUILD:  st = "Building..."; c = (Color){230,200,120,255}; break;
-      default:        { static char s[48]; snprintf(s,48,"Running (pid %d)",(int)sk.pid); st = s; c = (Color){160,220,255,255}; }
+      case ST_IDLE:   st = "Idle"; c = (Color){150,190,140,255}; break;
+      case ST_BUILD:  st = "Building..."; c = (Color){220,198,112,255}; break;
+      default:        { static char s[48]; snprintf(s,48,"Running (pid %d)",(int)sk.pid); st = s; c = (Color){150,205,190,255}; }
     }
+    float atw = MeasureTextEx(font, "ALPHA", fs, 0.0f).x;
+    DrawTextEx(font, "ALPHA", (Vector2){ w - atw - 6, 5 }, fs, 0.0f, OL_FAINT);
     float tw = MeasureTextEx(font, st, fs, 0.0f).x;
-    DrawTextEx(font, st, (Vector2){ w - tw - 8, 5 }, fs, 0.0f, c);
+    DrawTextEx(font, st, (Vector2){ w - tw - atw - 16, 5 }, fs, 0.0f, c);
   }
 
   /* ---------------- splitter + console area ---------------- */
   int split_y = h - console_frac;
-  DrawLine(0, split_y, w, split_y, (Color){90,90,90,255});
+  DrawLine(0, split_y, w, split_y, OL_EDGE);
+  DrawLine(0, split_y+1, w, split_y+1, OL_SHADOW);   /* 1px shadow under the line */
   /* drag handle */
-  Color handle = (Color){120,120,120,255};
+  Color handle = OL_DIM;
   DrawLine(0, split_y-2, w, split_y-2, handle);
   DrawLine(0, split_y+2, w, split_y+2, handle);
   if (state == ST_IDLE) {
@@ -830,7 +984,7 @@ static void frame(void) {
   }
 
   /* ---------------- console ---------------- */
-  DrawRectangle(0, split_y+3, w, h - (split_y+3), (Color){16,16,18,255});
+  DrawRectangle(0, split_y+3, w, h - (split_y+3), OL_CON);
   int con_top_area = split_y + 4;
   int con_h = h - con_top_area;
   if (con_h > 4) {
@@ -844,11 +998,11 @@ static void frame(void) {
       ConLine *cl = &con_lines[i];
       Color col;
       switch (cl->kind) {
-        case CON_ERR:    col = (Color){255,110,110,255}; break;
-        case CON_WARN:   col = (Color){255,220,140,255}; break;
-        case CON_STATUS: col = (Color){200,200,220,255}; break;
-        case CON_OK:     col = (Color){140,220,160,255}; break;
-        default:         col = (Color){210,210,210,255};
+        case CON_ERR:    col = (Color){235,120,110,255}; break;
+        case CON_WARN:   col = (Color){235,214,138,255}; break;
+        case CON_STATUS: col = (Color){195,200,180,255}; break;
+        case CON_OK:     col = (Color){140,205,150,255}; break;
+        default:         col = (Color){205,210,190,255};
       }
       float yy = con_top_area + (i - start) * line_h;
       int maxw = w / (int)char_w;
@@ -868,7 +1022,7 @@ static void frame(void) {
       }
     }
   }
-  DrawTextEx(font, "console", (Vector2){w-70, con_top_area+2}, fs-4, 1.0f, (Color){90,90,90,255});
+  DrawTextEx(font, "console", (Vector2){w-70, con_top_area+2}, fs-4, 1.0f, OL_FAINT);
 
   /* ---------------- editor ---------------- */
   int ed_top = tb;
@@ -876,7 +1030,7 @@ static void frame(void) {
   if (ed_h < 10) ed_h = 10;
 
   /* editor background */
-  DrawRectangle(0, ed_top, w, ed_h, (Color){24,24,27,255});
+  DrawRectangle(0, ed_top, w, ed_h, OL_ED);
 
   /* gutter width */
   int lines_n = ed_lines();
@@ -929,28 +1083,18 @@ static void frame(void) {
           case KEY_A: { /* select all */
             ed.sel = 0; ed.cur = ed.len;
           } break;
-          case KEY_X: {
+          case KEY_X: case KEY_C: {
             const char *s = ed_get_selected();
-            if (s) { /* copy to clipboard via tinyfd */
-#if defined(TINYFD_OSX) || defined(_WIN32)
-              /* no portable clipboard in tinyfiledialogs; skip */
-#else
-              /* use xclip/xsel if present */
-              const char *clips[] = { "xclip -selection clipboard", "xsel -b" };
-              for (int ci = 0; ci < 2; ci++) {
-                if (access("/usr/bin/xclip", X_OK)==0 || access("/bin/xclip", X_OK)==0 || access("/usr/bin/xsel", X_OK)==0) {
-                  char cmd[8192]; snprintf(cmd, sizeof cmd, "printf '%%s' %s | %s ", "", clips[ci]);
-                  /* not robust for arbitrary content; skip security-wise */
-                  break;
-                }
-              }
-#endif
-              size_t a,b; ed_sel_range(&a,&b); ed_delete_range(a,b); ed.cur = a;
+            if (s) {
+              SetClipboardText(s);
+              if (k == KEY_X) { size_t a,b; ed_sel_range(&a,&b); ed_delete_range(a,b); ed.cur = a; }
             }
             free((void*)s);
           } break;
-          case KEY_C: break; /* copy: no clipboard util wired; no-op */
-          case KEY_V: break; /* paste: no clipboard util wired; no-op */
+          case KEY_V: { /* paste from clipboard */
+            const char *cb = GetClipboardText();
+            if (cb) { size_t n = strlen(cb); if (n) ed_insert_text(cb, n); }
+          } break;
           case KEY_Z: break; /* undo: not implemented */
           default: break;
         }
@@ -1008,19 +1152,19 @@ static void frame(void) {
     float y = ed_top + i * line_h + 1;
 
     /* current line highlight */
-    if (li == cli) DrawRectangle(0, y-1, w, line_h, (Color){38,38,44,255});
+    if (li == cli) DrawRectangle(0, y-1, w, line_h, OL_LINE);
 
     /* error line: red left bar + light red bg */
     bool is_err = false;
     for (int e = 0; e < ed.err_count; e++) if (ed.err[e] == li+1) { is_err = true; break; }
     if (is_err) {
-      DrawRectangle(0, y-1, 4, line_h, (Color){230,70,70,255});
-      DrawRectangle(4, y-1, w-4, line_h, (Color){52,30,30,200});
+      DrawRectangle(0, y-1, 4, line_h, OL_ERRBAR);
+      DrawRectangle(4, y-1, w-4, line_h, OL_ERRBG);
     }
 
     /* gutter: line number */
     char nl[16]; snprintf(nl, sizeof nl, "%d", li+1);
-    Color ncol = (is_err || li == cli) ? (Color){220,220,220,255} : (Color){110,110,118,255};
+    Color ncol = (is_err || li == cli) ? OL_TEXT : OL_GUTTER;
     float nw = MeasureTextEx(font, nl, fs, 0.0f).x;
     DrawTextEx(font, nl, (Vector2){gutter_w - nw - 5, y}, fs, 0.0f, ncol);
 
@@ -1038,7 +1182,7 @@ static void frame(void) {
       char *lined = malloc((size_t)drawlen + 1);
       memcpy(lined, ed.buf + ls + trim, (size_t)drawlen); lined[drawlen] = 0;
       float gx = area_l + (trim - (size_t)start_col) * char_w; /* equals area_l */
-      DrawTextEx(font, lined, (Vector2){gx, y}, fs, 0.0f, (Color){225,225,228,255});
+      DrawTextEx(font, lined, (Vector2){gx, y}, fs, 0.0f, OL_TEXT);
       free(lined);
     }
     /* selection highlight */
@@ -1054,7 +1198,7 @@ static void frame(void) {
           float selw = ((long)c2 - (long)start_col) * char_w;
           if (c1 < (size_t)start_col) { selx = area_l; selw += ((long)start_col - (long)c1)*char_w; }
           if (selw < 0) selw = 0;
-          DrawRectangle((int)selx, (int)y-1, (int)selw, (int)line_h, (Color){58,96,140,200});
+          DrawRectangle((int)selx, (int)y-1, (int)selw, (int)line_h, OL_SEL);
         }
       }
     }
@@ -1075,13 +1219,19 @@ static void frame(void) {
         int c = cl - ed.view_line;
         int x = (int)(area_l + (ccol - ed.view_col) * char_w);
         int y = (int)(ed_top + c * line_h + 1);
-        if (ccol >= ed.view_col) DrawRectangle(x, y-1, (int)(char_w < 2 ? 1 : 1), (int)line_h, (Color){180,180,190,255});
+        if (ccol >= ed.view_col) DrawRectangle(x, y-1, (int)(char_w < 2 ? 1 : 1), (int)line_h, OL_CURSOR);
       }
     }
   }
 
   /* mouse interaction with editor (set cursor / selection) */
-  if (IsMouseButtonPressed(0) && GetMouseY() > ed_top && GetMouseY() < con_top_area && GetMouseX() > area_l) {
+  if (IsMouseButtonPressed(2) && GetMouseY() > ed_top && GetMouseY() < con_top_area && GetMouseX() > area_l) {
+    /* Linux/Unix middle-click paste (same content as Ctrl+V) */
+    ed.cur = ed_click_to_off(GetMouseX(), GetMouseY(), area_l, ed_top);
+    ed.sel = SIZE_MAX;
+    const char *cb = GetClipboardText();
+    if (cb) { size_t n = strlen(cb); if (n) ed_insert_text(cb, n); }
+  } else if (IsMouseButtonPressed(0) && GetMouseY() > ed_top && GetMouseY() < con_top_area && GetMouseX() > area_l) {
     ed.cur = ed_click_to_off(GetMouseX(), GetMouseY(), area_l, ed_top);
     ed.sel = SIZE_MAX; last_blink = GetTime();
   } else if (IsMouseButtonDown(0) && GetMouseY() > ed_top && GetMouseY() < con_top_area && GetMouseX() > area_l) {
@@ -1094,11 +1244,13 @@ static void frame(void) {
 static int ButtonLike(const char *label, int x, int y, int colw, int *yout) {
   (void)yout;
   Rectangle r = { x, y, colw, 20 };
-  Color c = (Color){55,58,64,255};
-  if (CheckCollisionPointRec(GetMousePosition(), r)) c = (Color){72,76,84,255};
+  Color c = OL_BTN;
+  if (CheckCollisionPointRec(GetMousePosition(), r)) c = OL_BTNH;
   DrawRectangleRec(r, c);
+  DrawLine(x, y+20, x+colw, y+20, OL_SHADOW);        /* 1px drop shadow */
+  DrawLine(x, y+21, x+colw, y+21, OL_SHADOW);
   float tw = MeasureTextEx(font, label, fs, 0.0f).x;
-  DrawTextEx(font, label, (Vector2){ x + (colw-tw)/2, y+3 }, fs, 0.0f, (Color){230,230,235,255});
+  DrawTextEx(font, label, (Vector2){ x + (colw-tw)/2, y+3 }, fs, 0.0f, OL_TEXT);
   return IsMouseButtonPressed(0) && CheckCollisionPointRec(GetMousePosition(), r);
 }
 

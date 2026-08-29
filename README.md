@@ -64,6 +64,27 @@ changes (turnaround ≈ 0.7s):
 ./pdecc --keep sketch.pde      # keep the tmp build dir on failure
 ```
 
+## The IDE (`pdeide`)
+
+`pdeide` is a tiny, pixel-crisp code editor for `.pde` sketches:
+
+```sh
+make pdeide                  # builds ./pdeide
+./pdeide [sketch.pde]        # add a sketch dir/single file as an "open" tab
+```
+
+- Built-in code editor with click-exact caret/selection placement on a true
+  monospace pixel grid.
+- Runs the sketch on demand via the compiler chain; build failures surface as
+  a message with `file:line` mapped back to your source.
+- Uses the **authentic embedded bitmap strikes** from `terminus.ttf`
+  (Terminess Nerd Font Mono) — rendered with FreeType, not raylib's stb_truetype
+  outline rasterizer — so every glyph keeps hard hand-tuned pixel edges.
+- Native open/save dialogs via bundled `tinyfiledialogs`.
+
+Requires the FreeType dev headers (`libfreetype-dev`); the `pdeide` Makefile
+target pulls in the needed flags via `pkg-config`.
+
 ## Testing against real-world corpora
 
 Two batch tools check every sketch directory under a tree (tabs merged
