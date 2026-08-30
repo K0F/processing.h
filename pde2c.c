@@ -1858,7 +1858,7 @@ int main(int argc, char *argv[]) {
         else if (strcmp(name, "textAlign") == 0) name = "textAlign1";
         else if (strcmp(name, "colorMode") == 0) {
           static char buf[16];
-          int m = nargs; if (m > 4) m = 4; if (m < 1) m = 1;
+          int m = nargs; if (m > 5) m = 5; if (m < 1) m = 1;
           snprintf(buf, sizeof(buf), "colorMode%d", m);
           name = buf;
         }

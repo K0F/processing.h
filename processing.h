@@ -465,6 +465,9 @@ static inline void colorMode1(int mode) { (void)mode; }
 static inline void colorMode2(int mode, float max1) { (void)mode; (void)max1; }
 static inline void colorMode3(int mode, float max1, float max2) { (void)mode; (void)max1; (void)max2; }
 static inline void colorMode4(int mode, float max1, float max2, float max3) { (void)mode; (void)max1; (void)max2; (void)max3; }
+static inline void colorMode5(int mode, float max1, float max2, float max3, float maxA) { (void)mode; (void)max1; (void)max2; (void)max3; (void)maxA; }
+#define COLOR_MODE_CHOOSER(_1, _2, _3, _4, _5, NAME, ...) NAME
+#define colorMode(...) COLOR_MODE_CHOOSER(__VA_ARGS__, colorMode5, colorMode4, colorMode3, colorMode2, colorMode1, DUMMY)(__VA_ARGS__)
 
 // Java-style modulo: works on floats like Processing's % (int math identical)
 static inline float _pde_modf(float a, float b) {
@@ -2816,6 +2819,163 @@ static inline void *_pde_array_new(int n, size_t elemSize) {
   void *p = calloc((size_t)(n > 0 ? n : 1), elemSize);
   _pde_arr_register(p, (size_t)(n > 0 ? n : 0), elemSize);
   return p;
+}
+
+// ---------------------------------------------------------------------
+// Documented-but-unimplemented commands (Processing reference audit).
+// Stubs keep sketches compiling; every body is a deliberate no-op marked
+// TODO. Method-call forms (PVector.random2D(), String.trim(), ...) need
+// pde2c rewriting and stay out of scope here (see TODO.md).
+// ---------------------------------------------------------------------
+
+// cursor type constants used by the cursor() stub (mirror PConstants)
+enum { ARROW = 1, CROSS = 2, HAND = 3, MOVE = 4, TEXT_CURSOR = 5, WAIT = 6 };
+
+// constants used by the textMode / textWrap / textureWrap stubs below
+#ifndef WRAP
+#define WRAP    1
+#define CHAR    2
+#define WORD    3
+#endif
+#ifndef MODEL
+#define MODEL   1
+#define SHAPE   2
+#endif
+#ifndef REPEAT
+#define REPEAT  3
+#define CLAMP   4
+#define MIRROR  5
+#endif
+
+// G1 shape curves / contours
+static inline void curveVertex(float x, float y, ...) {
+  (void)x; (void)y; /* TODO: unimplemented */
+}
+static inline void quadraticVertex(float cx, float cy, float x, float y) {
+  (void)cx; (void)cy; (void)x; (void)y; /* TODO: unimplemented */
+}
+static inline void beginContour(void) { /* TODO: unimplemented */ }
+static inline void endContour(void)   { /* TODO: unimplemented */ }
+
+// G2 transform / projection / fullscreen
+static inline void printMatrix(void) { /* TODO: unimplemented */ }
+static inline void perspective0(void) { /* TODO: unimplemented */ }
+static inline void perspective4(float fovY, float aspect, float zNear, float zFar) {
+  (void)fovY; (void)aspect; (void)zNear; (void)zFar; /* TODO: unimplemented */
+}
+#define PERSPECTIVE_CHOOSER(_1, _2, _3, _4, _5, NAME, ...) NAME
+// GNU `,##__VA_ARGS__` swallows the preceding comma for the no-arg form
+#define perspective(...) PERSPECTIVE_CHOOSER(0, ##__VA_ARGS__, perspective4, DUMMY, DUMMY, DUMMY, perspective0)(__VA_ARGS__)
+static inline void frustum(float left, float right, float bottom, float top,
+                           float zNear, float zFar) {
+  (void)left; (void)right; (void)bottom; (void)top; (void)zNear; (void)zFar;
+  /* TODO: unimplemented */
+}
+static inline void beginCamera(void) { /* TODO: unimplemented */ }
+static inline void endCamera(void)   { /* TODO: unimplemented */ }
+static inline void fullScreen0(void) { /* TODO: unimplemented */ }
+static inline void fullScreen1(int renderer) { (void)renderer; /* TODO: unimplemented */ }
+#define FULLSCREEN_CHOOSER(_1, _2, NAME, ...) NAME
+#define fullScreen(...) FULLSCREEN_CHOOSER(0, ##__VA_ARGS__, fullScreen1, fullScreen0)(__VA_ARGS__)
+
+// G3 style stack
+static inline void pushStyle(void) { /* TODO: unimplemented */ }
+static inline void popStyle(void)  { /* TODO: unimplemented */ }
+
+// G5 typography (textAlign/textFont/etc. are implemented elsewhere)
+static inline void textMode(int mode) { (void)mode; /* TODO: unimplemented */ }
+static inline void textWrap(int wrap) { (void)wrap; /* TODO: unimplemented */ }
+
+// G6 image
+static inline void imageMode(int mode) { (void)mode; /* TODO: unimplemented */ }
+static inline void blend(float sx, float sy, float sw, float sh, ...) {
+  (void)sx; (void)sy; (void)sw; (void)sh; /* TODO: unimplemented */
+}
+typedef int PShape;
+static inline PShape loadShape(const char *filename) {
+  (void)filename; /* TODO: unimplemented */
+  return 0;
+}
+static inline PShape createShape(void) {
+  /* TODO: unimplemented */
+  return 0;
+}
+
+// G7 lights / materials
+static inline void ambientLight(float v1, float v2, float v3, ...) {
+  (void)v1; (void)v2; (void)v3; /* TODO: unimplemented */
+}
+static inline void directionalLight(float v1, float v2, float v3, ...) {
+  (void)v1; (void)v2; (void)v3; /* TODO: unimplemented */
+}
+static inline void pointLight(float v1, float v2, float v3, ...) {
+  (void)v1; (void)v2; (void)v3; /* TODO: unimplemented */
+}
+static inline void spotLight(float v1, float v2, float v3, ...) {
+  (void)v1; (void)v2; (void)v3; /* TODO: unimplemented */
+}
+static inline void lightSpecular(float v1, float v2, float v3) {
+  (void)v1; (void)v2; (void)v3; /* TODO: unimplemented */
+}
+static inline void lightFalloff(float constant, float linear, float quadratic) {
+  (void)constant; (void)linear; (void)quadratic; /* TODO: unimplemented */
+}
+static inline void ambient(float r, float g, float b) {
+  (void)r; (void)g; (void)b; /* TODO: unimplemented */
+}
+static inline void emissive(float r, float g, float b) {
+  (void)r; (void)g; (void)b; /* TODO: unimplemented */
+}
+static inline void specular(float r, float g, float b) {
+  (void)r; (void)g; (void)b; /* TODO: unimplemented */
+}
+static inline void shininess(float shine) { (void)shine; /* TODO: unimplemented */ }
+static inline void texture(PImage img) { (void)img; /* TODO: unimplemented */ }
+static inline void textureWrap(int wrap) { (void)wrap; /* TODO: unimplemented */ }
+
+// G8 environment
+static inline void delay(int ms) { (void)ms; /* TODO: unimplemented */ }
+static inline void cursor0(void) { /* TODO: unimplemented */ }
+static inline void cursor1(int cursorType) { (void)cursorType; /* TODO: unimplemented */ }
+#define CURSOR_CHOOSER(_1, _2, NAME, ...) NAME
+#define cursor(...) CURSOR_CHOOSER(0, ##__VA_ARGS__, cursor1, cursor0)(__VA_ARGS__)
+static inline void noCursor(void) { /* TODO: unimplemented */ }
+
+// G9 data conversion (stubs; `char(x)` is already valid C as a cast)
+static inline unsigned char _pde_byte(long long v) { (void)v; return 0; /* TODO: unimplemented */ }
+#define byte(X) _Generic((X), default: _pde_byte)((long long)(X))
+static inline bool _pde_boolean(unsigned int v) { (void)v; return false; /* TODO: unimplemented */ }
+#define boolean(X) _Generic((X), default: _pde_boolean)((unsigned int)(X))
+static inline const char *_pde_binary1(unsigned int v) { (void)v; return "0"; /* TODO: unimplemented */ }
+static inline const char *_pde_binary2(unsigned int v, int digits) {
+  (void)v; (void)digits; return "0"; /* TODO: unimplemented */
+}
+#define BINARY_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define binary(...) BINARY_CHOOSER(0, ##__VA_ARGS__, _pde_binary2, _pde_binary1)(__VA_ARGS__)
+static inline int unbinary(const char *s) { (void)s; return 0; /* TODO: unimplemented */ }
+
+// G10 string utilities (standalone forms; String methods need pde2c)
+static inline const char **trim(const char **strs) {
+  (void)strs; /* TODO: unimplemented */
+  return strs;
+}
+static inline const char **match(const char *s, const char *regexp) {
+  (void)s; (void)regexp; /* TODO: unimplemented */
+  return NULL;
+}
+static inline const char **matchAll(const char *s, const char *regexp) {
+  (void)s; (void)regexp; /* TODO: unimplemented */
+  return NULL;
+}
+
+// G11 PVector statics (free-function forms; PVector.random2D() needs pde2c)
+static inline PVector random2D(void) {
+  /* TODO: unimplemented */
+  return (PVector){ 0.0f, 0.0f, 0.0f };
+}
+static inline PVector random3D(void) {
+  /* TODO: unimplemented */
+  return (PVector){ 0.0f, 0.0f, 0.0f };
 }
 
 // defer //////////////////////////////////////////////////////////////////

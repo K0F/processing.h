@@ -102,6 +102,30 @@ CMake build with vendored raylib + FreeType make it self-contained.
   binary next to the source, using the precompiled header for ~0.7s turnaround.
   Flags: `-o <bin>`, `-O<N>`, `-n/--no-run`, `--keep`.
 
+## Phase 9: API Completeness (Processing reference audit)
+Audit of `processing.h` against https://processing.org/reference. Where a documented
+command was missing entirely, a compile-compatible stub (no-op body, marked `TODO`)
+keeps sketches building; verified-present commands are ticked. Deferred work sits in
+the "Backlog" block below.
+- [x] **G1 curves & contours:** `curveVertex`, `quadraticVertex`, `beginContour`, `endContour`.
+- [x] **G2 transform / projection / fullscreen:** `printMatrix`, `perspective` (0/4-arg), `frustum`, `beginCamera`, `endCamera`, `fullScreen`.
+- [x] **G3 style stack:** `pushStyle`, `popStyle`.
+- [x] **G4 color modes:** `colorMode` 1..5-arg forms routed (was capped at 4; `colorMode5` added + pde2c arity cap lifted).
+- [x] **G5 typography:** `textMode`, `textWrap` stubs; `textAlign(1/2)` + `textFont`/`textSize`/`loadFont`/`textAscent`/`textDescent`/`textLeading` already implemented.
+- [x] **G6 image:** `imageMode`, `blend` (image op), `PShape` + `loadShape`, `createShape` stubs.
+- [x] **G7 lights & materials:** `ambientLight`, `directionalLight`, `pointLight`, `spotLight`, `lightSpecular`, `lightFalloff`, `ambient`, `emissive`, `specular`, `shininess`, `texture`, `textureWrap`.
+- [x] **G8 environment:** `delay`, `cursor` (+ cursor constants `ARROW/CROSS/HAND/MOVE/TEXT_CURSOR/WAIT`), `noCursor`.
+- [x] **G9 data conversion:** `byte`, `boolean` (`_Generic` wrappers), `binary` (1/2-arg), `unbinary`; `char(x)` is already valid C as a cast.
+- [x] **G10 string utilities:** standalone `trim(String[])`, `match`, `matchAll` free functions.
+- [x] **G11 PVector statics:** standalone `random2D`, `random3D` free functions.
+- [x] **Constants for stub modes:** `WRAP`/`CHAR`/`WORD`, `MODEL`/`SHAPE`, `REPEAT`/`CLAMP`/`MIRROR`, cursor types, `colorMode` uses existing `RGB`/`HSB`.
+
+### Backlog (deferred fixes from the audit)
+- [ ] **Value-mismatch fixes:** `round`/`floor`/`ceil` return `int` (currently `float`); `hex()` adds a `#` prefix Processing does not emit and lacks the `digits` arity; `min`/`max` need 3-arg + array forms; `nf`/`nfc` need array forms and `nfc` must keep its 2 decimals.
+- [ ] **Method-call forms of stubbed commands:** `PVector.random2D()`, `PVector.random3D()`, `String.trim()`, `str.trim()`-style calls need pde2c rewriter support before they can compile.
+- [ ] **Promote stubs to real implementations** once a sketch actually needs each body.
+- [ ] **Verify remaining constants:** `hue`/`saturation`/`brightness` output ranges and `beginShape` `OPEN`/`CLOSE` enum values vs real Processing ints (`CLOSE=145`).
+
 ## Next Steps (Unfinished)
 - [ ] **Inheritance & generics / type parameters** (`extends`, `<T>`).
 - [ ] **Exception handling:** `try/catch`.
