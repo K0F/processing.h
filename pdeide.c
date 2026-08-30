@@ -960,10 +960,12 @@ static void frame(void) {
       case ST_BUILD:  st = "Building..."; c = (Color){220,198,112,255}; break;
       default:        { static char s[48]; snprintf(s,48,"Running (pid %d)",(int)sk.pid); st = s; c = (Color){150,205,190,255}; }
     }
+    float vtw = MeasureTextEx(font, "0.1.1", fs, 0.0f).x;
     float atw = MeasureTextEx(font, "ALPHA", fs, 0.0f).x;
+    DrawTextEx(font, "0.1.1", (Vector2){ w - atw - 10 - vtw, 5 }, fs, 0.0f, OL_FAINT);
     DrawTextEx(font, "ALPHA", (Vector2){ w - atw - 6, 5 }, fs, 0.0f, OL_FAINT);
     float tw = MeasureTextEx(font, st, fs, 0.0f).x;
-    DrawTextEx(font, st, (Vector2){ w - tw - atw - 16, 5 }, fs, 0.0f, c);
+    DrawTextEx(font, st, (Vector2){ w - tw - atw - vtw - 26, 5 }, fs, 0.0f, c);
   }
 
   /* ---------------- splitter + console area ---------------- */
