@@ -126,6 +126,27 @@ static void test_binary_unbinary(void) {
   CHECK(unbinary("") == 0, "unbinary(\"\")=%d want 0", unbinary(""));
 }
 
+static void test_trim(void) {
+  CHECK(strcmp(trim("  hello  "), "hello") == 0, "trim('  hello  ')=%s", trim("  hello  "));
+  CHECK(strcmp(trim("\t\n  abc \r"), "abc") == 0, "trim(tab/nl/CR)=%s", trim("\t\n  abc \r"));
+  CHECK(strcmp(trim("   "), "") == 0, "trim(all-ws)=%s", trim("   "));
+  CHECK(strcmp(trim("no-ws"), "no-ws") == 0, "trim(no-ws)=%s", trim("no-ws"));
+  CHECK(strcmp(trim("  keep  inner  "), "keep  inner") == 0,
+        "trim(inner spaces)=%s", trim("  keep  inner  "));
+  CHECK(strcmp(trim(""), "") == 0, "trim(empty)=%s", trim(""));
+
+  const char **a = calloc(3, sizeof(const char *));
+  a[0] = "  one ";
+  a[1] = "two\t";
+  a[2] = "\nthree\n";
+  _pde_arr_register(a, 3, sizeof(const char *));
+  const char **t = trim(a);
+  CHECK(_pde_arr_len(t) == 3, "trim(String[]) len=%d want 3", _pde_arr_len(t));
+  CHECK(strcmp(t[0], "one") == 0, "trim(String[0])=%s want one", t[0]);
+  CHECK(strcmp(t[1], "two") == 0, "trim(String[1])=%s want two", t[1]);
+  CHECK(strcmp(t[2], "three") == 0, "trim(String[2])=%s want three", t[2]);
+}
+
 int main(void) {
   test_min2_scalar();
   test_max2_scalar();
@@ -137,6 +158,7 @@ int main(void) {
   test_min_arr_count_form();
   test_delay();
   test_binary_unbinary();
+  test_trim();
   printf("%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

@@ -3037,10 +3037,32 @@ static inline int unbinary(const char *s) {
 }
 
 // G10 string utilities (standalone forms; String methods need pde2c)
-static inline const char **trim(const char **strs) {
-  (void)strs; /* TODO: unimplemented */
-  return strs;
+// trim(): strip Java whitespace (chars <= ' ') from both ends. A single
+// String is trimmed into a new String; a String[] is realloc'ed into a
+// same-length registered heap array with every element trimmed.
+static inline const char *_pde_trim1(const char *s) {
+  if (!s) return "";
+  while (*s && (unsigned char)*s <= ' ') s++;
+  if (!*s) return "";
+  size_t n = strlen(s);
+  while (n > 0 && (unsigned char)s[n - 1] <= ' ') n--;
+  return _pde_dup_len(s, n);
 }
+static inline const char **_pde_trim2(const char **strs) {
+  int n = _pde_arr_len(strs);
+  if (n < 0) n = 0;
+  const char **out = (const char **)calloc((size_t)(n > 0 ? n : 1), sizeof(const char *));
+  if (!out) return strs;
+  for (int i = 0; i < n; i++) out[i] = _pde_trim1(strs[i]);
+  _pde_arr_register(out, (size_t)(n > 0 ? n : 1), sizeof(const char *));
+  return out;
+}
+#define TRIM_SEL(A) _Generic(&(A)[0], \
+    const char *: _pde_trim1, \
+    char *: _pde_trim1, \
+    const char **: _pde_trim2, \
+    default: _pde_trim2)
+#define trim(A) TRIM_SEL(A)(A)
 static inline const char **match(const char *s, const char *regexp) {
   (void)s; (void)regexp; /* TODO: unimplemented */
   return NULL;

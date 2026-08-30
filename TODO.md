@@ -139,7 +139,7 @@ shape/path subsystem. Each line below lands as its own commit.
 - [x] binary()/unbinary() real bit-string conversion  [1]
 - [ ] hex() real (drop '#' prefix) + digits arity  [2]
 - [ ] PMatrix 2D API + printMatrix  [2]
-- [ ] trim(String[]) real (strip + realloc arrays)  [1]
+- [x] trim(String[]) real (strip + realloc arrays)  [1]
 - [ ] String instance methods refactored to _pde_str_* (indexOf, substring, toLowerCase/UpperCase, replace, equals)  [3]
 - [ ] PVector instance + static methods (set/mag/add/sub/mult/div/dist/dot/cross/normalize/limit/heading/rotate/lerp/angleBetween/array/fromAngle + random2D/random3D)  [3]
 - [ ] match()/matchAll() - needs a minimal regex engine (vendored or ~300-line DFA)  [4]
