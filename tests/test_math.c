@@ -147,6 +147,29 @@ static void test_trim(void) {
   CHECK(strcmp(t[2], "three") == 0, "trim(String[2])=%s want three", t[2]);
 }
 
+static void test_byte_boolean(void) {
+  CHECK(byte(300) == 255, "byte(300)=%d want 255", byte(300));
+  CHECK(byte(256) == 255, "byte(256)=%d want 255", byte(256));
+  CHECK(byte(255) == 255, "byte(255)=%d want 255", byte(255));
+  CHECK(byte(123) == 123, "byte(123)=%d want 123", byte(123));
+  CHECK(byte(0) == 0, "byte(0)=%d want 0", byte(0));
+  CHECK(byte(-5) == 0, "byte(-5)=%d want 0", byte(-5));
+  CHECK(byte(-255) == 0, "byte(-255)=%d want 0", byte(-255));
+  CHECK(byte(200.9) == 200, "byte(200.9)=%d want 200", byte(200.9));
+  CHECK(byte(-1.5) == 0, "byte(-1.5)=%d want 0", byte(-1.5));
+
+  CHECK(boolean(0) == false, "boolean(0) should be false");
+  CHECK(boolean(1) == true, "boolean(1) should be true");
+  CHECK(boolean(-42) == true, "boolean(-42) should be true");
+  CHECK(boolean(0.0) == false, "boolean(0.0) should be false");
+  bool t = true;
+  CHECK(boolean(t) == true, "boolean(bool true) should be true");
+  CHECK(boolean("true") == true, "boolean(\"true\") should be true");
+  CHECK(boolean("false") == false, "boolean(\"false\") should be false");
+  CHECK(boolean("") == false, "boolean(\"\") should be false");
+  CHECK(boolean("hippopotamus") == false, "boolean(\"hippopotamus\") should be false");
+}
+
 int main(void) {
   test_min2_scalar();
   test_max2_scalar();
@@ -158,6 +181,7 @@ int main(void) {
   test_min_arr_count_form();
   test_delay();
   test_binary_unbinary();
+  test_byte_boolean();
   test_trim();
   printf("%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;

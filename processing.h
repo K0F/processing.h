@@ -3002,13 +3002,23 @@ static inline void cursor1(int cursorType) {
 #define cursor(...) CURSOR_CHOOSER(0, ##__VA_ARGS__, cursor1, cursor0)(__VA_ARGS__)
 static inline void noCursor(void) { HideCursor(); }
 
-// G9 data conversion (byte()/boolean() stubs; `char(x)` is already valid C as
-// a cast). binary() emits the low `digits` bits as an ASCII string (default
-// full 32-bit two's-complement width); unbinary() parses them back.
-static inline unsigned char _pde_byte(long long v) { (void)v; return 0; /* TODO: unimplemented */ }
+// G9 data conversion. byte() clamps any value to [0,255] (the runtime byte
+// type is uint8_t); boolean() maps nonzero numbers to true and only the
+// string "true" to true. `char(x)` is already valid C as a cast. binary()
+// emits the low `digits` bits as an ASCII string (default full 32-bit
+// two's-complement width); unbinary() parses them back.
+static inline unsigned char _pde_byte(long long v) {
+  if (v <= 0) return 0;
+  if (v >= 255) return 255;
+  return (unsigned char)v;
+}
 #define byte(X) _Generic((X), default: _pde_byte)((long long)(X))
-static inline bool _pde_boolean(unsigned int v) { (void)v; return false; /* TODO: unimplemented */ }
-#define boolean(X) _Generic((X), default: _pde_boolean)((unsigned int)(X))
+static inline bool _pde_boolean(unsigned int v) { return v != 0; }
+static inline bool _pde_boolean_str(const char *s) { return s && strcmp(s, "true") == 0; }
+#define boolean(X) _Generic((X), \
+    const char *: _pde_boolean_str, \
+    char *: _pde_boolean_str, \
+    default: _pde_boolean)(X)
 static inline const char *_pde_binary2(unsigned int v, int digits) {
   static char _pdeBinBufs[4][33];
   static int _pdeBinIdx = 0;

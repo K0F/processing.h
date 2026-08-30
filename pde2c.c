@@ -2201,10 +2201,11 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    // 6. Map boolean keyword (type OR conversion cast: boolean(x) -> (bool)(x))
+    // 6. Map boolean keyword (type OR conversion cast: boolean(x) routes through
+    //    the runtime macro so strings and numbers convert like Processing)
     if (current.type == TOKEN_KEYWORD && strcmp(current.text, "boolean") == 0) {
       if (i + 1 < num_tokens && tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "(") == 0)
-        printf("(bool)");
+        printf("boolean");
       else
         printf("bool ");
       i++;
@@ -2212,15 +2213,27 @@ int main(int argc, char *argv[]) {
     }
 
     // 6b. Primitive type as conversion cast: int(x), float(x), char(x),
-    //     double(x), byte(x) -> (int)(x) etc. (C has no function-style casts)
+    //     double(x) -> (int)(x) etc. (C has no function-style casts). byte(x)
+    //     is deliberately excluded: it passes through to the runtime macro so
+    //     the sketch gets clamp-to-[0,255] semantics instead of a wrap cast.
     if (current.type == TOKEN_KEYWORD &&
         (strcmp(current.text, "int") == 0 || strcmp(current.text, "float") == 0 ||
-         strcmp(current.text, "char") == 0 || strcmp(current.text, "double") == 0 ||
-         strcmp(current.text, "byte") == 0) &&
+         strcmp(current.text, "char") == 0 || strcmp(current.text, "double") == 0) &&
         (i + 1 < num_tokens) &&
         tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "(") == 0)
     {
       printf("(%s)", emit_c_type_str(current.text));
+      i++;
+      continue;
+    }
+
+    // 6c. byte as a scalar type: byte b; -> uint8_t b; (the cast form byte(x)
+    //     falls through to the header macro, expanded by the C compiler).
+    if (current.type == TOKEN_KEYWORD && strcmp(current.text, "byte") == 0) {
+      if (i + 1 < num_tokens && tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "(") == 0)
+        printf("byte");
+      else
+        printf("uint8_t ");
       i++;
       continue;
     }

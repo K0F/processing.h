@@ -135,7 +135,7 @@ shape/path subsystem. Each line below lands as its own commit.
 - [x] delay(), cursor()/noCursor() real (CPU-delay; raylib Show/HideMouse + SetMouseCursor)  [1]
 - [x] min()/max() 3-arg + int[]/float[] array forms  [1]
 - [ ] nf()/nfc() array forms; nfc() keeps 2 decimals  [2]
-- [ ] byte()/boolean() real clamp/bool conversions; char() kept as C cast  [1]
+- [x] byte()/boolean() real clamp/bool conversions; char() kept as C cast  [1]
 - [x] binary()/unbinary() real bit-string conversion  [1]
 - [ ] hex() real (drop '#' prefix) + digits arity  [2]
 - [ ] PMatrix 2D API + printMatrix  [2]
