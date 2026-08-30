@@ -19,14 +19,6 @@ corpus-results.txt
 *.webp
 session-*.md
 
-# but keep committed documentation screenshots
-!docs/
-!docs/*.png
-!docs/*.jpg
-!docs/*.jpeg
-!docs/*.gif
-!docs/*.webp
-
 # build trees (static deps + release)
 /build/
 /dist/
