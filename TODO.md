@@ -165,10 +165,27 @@ shape/path subsystem. Each line below lands as its own commit.
 ## Next Steps (Unfinished)
 - [ ] **Inheritance & generics / type parameters** (`extends`, `<T>`).
 - [ ] **Exception handling:** `try/catch`.
-- [ ] **More `String` methods:** `indexOf`, `substring`, `toLowerCase`, `toUpperCase`, `replace`, ...
+- [ ] **String instance methods** (refactor to `_pde_str_*`: `indexOf`, `substring`, `toLowerCase`/`UpperCase`, `replace`, `equals`). (See Phase 10 Tier A, item 9).
 - [ ] **Path building:** `curveVertex` / `bezierVertex` inside arbitrary (non-`beginShape(CLOSE)`) paths.
 - [ ] **File IO:** `loadStrings` / `saveStrings` and text-file reading/writing.
 - [ ] **PGraphics receiver drawing:** `pg.stroke()`-style drawing calls on a `PGraphics` receiver (only `beginDraw/endDraw` are routed today).
+- [ ] **pde2c enhanced `for (Type x : list)`** (used heavily in Processing 2/3 era sketches, e.g. The Nature of Code).
 - [ ] **Windows validation:** compile + run the IDE on `_WIN32` (platform layer is written but untested).
 - [ ] **CI:** GitHub Actions matrix (Linux/macOS/Windows) building, testing and producing the release tarball.
 - [ ] **Multi-platform export from the IDE:** macOS/Windows static binaries alongside the Linux one.
+
+---
+
+## Phase 11: Wild-code compatibility (corpus campaigns)
+
+Strategy: Drive API completeness and transpiler robustness by continuous integration against major Processing sketch corpora. Each line below implies downloading, first-pass `wildtest`, A/B vs baseline, README update, and analysis of failure modes. Fixes will follow from this analysis.
+
+- [ ] `wildtest`: normalize temp-dir paths in status lines for clean A/B diffs `[1]`
+- [ ] Download + first-pass `./wildtest` + A/B vs pre-feature baseline + README row for `nature-of-code/noc-examples-processing` (2012–2018 era) `[2]`
+- [ ] Download + first-pass `./wildtest` + A/B vs pre-feature baseline + README row for `generative-design/Code-Package-Processing-1.5.1` (2011 era) `[2]`
+- [ ] Download + first-pass `./wildtest` + A/B vs pre-feature baseline + README row for `generative-design/Code-Package-Processing-2.x` (~2012 era) `[2]`
+- [ ] Download + first-pass `./wildtest` + A/B vs pre-feature baseline + README row for `generative-design/Code-Package-Processing-3.x` (2015 era) `[2]`
+- [ ] Download + first-pass `./wildtest` + A/B vs pre-feature baseline + README row for built-in Processing Examples (Processing 4 era, `processing` org) `[2]`
+- [ ] Categorize corpus failures into *missing third-party lib*, *unimplemented core API*, or *pde2c transpiler gap* buckets `[1]`
+- [ ] Fix pde2c: multi-tab sketches producing `implicit declaration of function 'setup'` (`COMPILE-ERR` often triggered when `setup()` is in a non-main tab) `[3]`
+- [ ] Document non-goals: media/network/heavy-GUI Processing libraries (`OscP5`, `Minim`, `PeasyCam`, `PGraphicsOpenGL`, `Capture`/`Serial`, `SoundFile`) will remain stubbed, not implemented as real backends. `[1]`
