@@ -1,9 +1,11 @@
-/* Unit tests for the min()/max() math functions in processing.h.
- * Headless: min/max have no raylib dependency, so no linking needed. */
+/* Unit tests for pure processing.h functions — min()/max() math and the
+ * real delay() environment call. Headless: no window is opened, and the only
+ * GPU-touching code that needs linking is satisfied by the static archives. */
 
 #include "processing.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 static int failures = 0;
 static int checks   = 0;
@@ -87,6 +89,18 @@ static void test_min_arr_count_form(void) {
   CHECK(_pde_max_arr_float(f, 2) == 8.0f, "explicit-count max=%f want 8.0", _pde_max_arr_float(f, 2));
 }
 
+static void test_delay(void) {
+  struct timespec t0, t1;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  delay(200);
+  clock_gettime(CLOCK_MONOTONIC, &t1);
+  double elapsed = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+  CHECK(elapsed >= 0.15, "delay(200) elapsed %.3fs want >=0.15", elapsed);
+  CHECK(elapsed < 2.0, "delay(200) elapsed %.3fs want <2", elapsed);
+  delay(0);
+  delay(-5);
+}
+
 int main(void) {
   test_min2_scalar();
   test_max2_scalar();
@@ -96,6 +110,7 @@ int main(void) {
   test_min_max_float_array();
   test_min_max_heap_array();
   test_min_arr_count_form();
+  test_delay();
   printf("%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

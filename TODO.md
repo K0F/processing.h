@@ -132,7 +132,7 @@ method-call forms, then add renderer state in small layers, then the
 shape/path subsystem. Each line below lands as its own commit.
 
 ### Tier A - Pure functions (unit tests via ctest, no GPU)
-- [ ] delay(), cursor()/noCursor() real (CPU-delay; raylib Show/HideMouse + SetMouseCursor)  [1]
+- [x] delay(), cursor()/noCursor() real (CPU-delay; raylib Show/HideMouse + SetMouseCursor)  [1]
 - [x] min()/max() 3-arg + int[]/float[] array forms  [1]
 - [ ] nf()/nfc() array forms; nfc() keeps 2 decimals  [2]
 - [ ] byte()/boolean() real clamp/bool conversions; char() kept as C cast  [1]

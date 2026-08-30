@@ -2967,12 +2967,40 @@ static inline void texture(PImage img) { (void)img; /* TODO: unimplemented */ }
 static inline void textureWrap(int wrap) { (void)wrap; /* TODO: unimplemented */ }
 
 // G8 environment
-static inline void delay(int ms) { (void)ms; /* TODO: unimplemented */ }
-static inline void cursor0(void) { /* TODO: unimplemented */ }
-static inline void cursor1(int cursorType) { (void)cursorType; /* TODO: unimplemented */ }
+static inline void delay(int ms) {
+  if (ms <= 0) return;
+#ifdef _WIN32
+  DWORD start = GetTickCount();
+  while ((GetTickCount() - start) < (DWORD)ms) { /* busy-wait */ }
+#else
+  struct timeval start, now;
+  gettimeofday(&start, NULL);
+  long target_us = (long)ms * 1000L;
+  while (1) {
+    gettimeofday(&now, NULL);
+    long elapsed_us = (now.tv_sec - start.tv_sec) * 1000000L + (now.tv_usec - start.tv_usec);
+    if (elapsed_us >= target_us) break;
+  }
+#endif
+}
+static inline void cursor0(void) { ShowCursor(); SetMouseCursor(MOUSE_CURSOR_DEFAULT); }
+static inline void cursor1(int cursorType) {
+  ShowCursor();
+  int rl;
+  switch (cursorType) {
+    case ARROW:       rl = MOUSE_CURSOR_ARROW;         break;
+    case CROSS:       rl = MOUSE_CURSOR_CROSSHAIR;     break;
+    case HAND:        rl = MOUSE_CURSOR_POINTING_HAND; break;
+    case MOVE:        rl = MOUSE_CURSOR_RESIZE_ALL;    break;
+    case TEXT_CURSOR: rl = MOUSE_CURSOR_IBEAM;         break;
+    case WAIT:        rl = MOUSE_CURSOR_DEFAULT;       break; // raylib has no hourglass
+    default:          rl = MOUSE_CURSOR_DEFAULT;       break;
+  }
+  SetMouseCursor(rl);
+}
 #define CURSOR_CHOOSER(_1, _2, NAME, ...) NAME
 #define cursor(...) CURSOR_CHOOSER(0, ##__VA_ARGS__, cursor1, cursor0)(__VA_ARGS__)
-static inline void noCursor(void) { /* TODO: unimplemented */ }
+static inline void noCursor(void) { HideCursor(); }
 
 // G9 data conversion (stubs; `char(x)` is already valid C as a cast)
 static inline unsigned char _pde_byte(long long v) { (void)v; return 0; /* TODO: unimplemented */ }
