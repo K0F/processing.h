@@ -7,6 +7,7 @@ pdecc
 pp2c
 render
 tests/test_editor
+tests/test_math
 *.o
 *.gch
 

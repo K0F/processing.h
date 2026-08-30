@@ -121,7 +121,7 @@ the "Backlog" block below.
 - [x] **Constants for stub modes:** `WRAP`/`CHAR`/`WORD`, `MODEL`/`SHAPE`, `REPEAT`/`CLAMP`/`MIRROR`, cursor types, `colorMode` uses existing `RGB`/`HSB`.
 
 ### Backlog (deferred fixes from the audit)
-- [ ] **Value-mismatch fixes:** `round`/`floor`/`ceil` return `int` (currently `float`); `hex()` adds a `#` prefix Processing does not emit and lacks the `digits` arity; `min`/`max` need 3-arg + array forms; `nf`/`nfc` need array forms and `nfc` must keep its 2 decimals.
+- [ ] **Value-mismatch fixes:** `round`/`floor`/`ceil` return `int` (currently `float`); `hex()` adds a `#` prefix Processing does not emit and lacks the `digits` arity; `nf`/`nfc` need array forms and `nfc` must keep its 2 decimals.
 - [ ] **Method-call forms of stubbed commands:** `PVector.random2D()`, `PVector.random3D()`, `String.trim()`, `str.trim()`-style calls need pde2c rewriter support before they can compile.
 - [ ] **Promote stubs to real implementations** once a sketch actually needs each body.
 - [ ] **Verify remaining constants:** `hue`/`saturation`/`brightness` output ranges and `beginShape` `OPEN`/`CLOSE` enum values vs real Processing ints (`CLOSE=145`).
@@ -133,7 +133,7 @@ shape/path subsystem. Each line below lands as its own commit.
 
 ### Tier A - Pure functions (unit tests via ctest, no GPU)
 - [ ] delay(), cursor()/noCursor() real (CPU-delay; raylib Show/HideMouse + SetMouseCursor)  [1]
-- [ ] min()/max() 3-arg + int[]/float[] array forms  [1]
+- [x] min()/max() 3-arg + int[]/float[] array forms  [1]
 - [ ] nf()/nfc() array forms; nfc() keeps 2 decimals  [2]
 - [ ] byte()/boolean() real clamp/bool conversions; char() kept as C cast  [1]
 - [ ] binary()/unbinary() real bit-string conversion  [1]

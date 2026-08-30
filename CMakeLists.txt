@@ -155,6 +155,39 @@ target_include_directories(test_editor PRIVATE "${CMAKE_SOURCE_DIR}")
 target_link_libraries(test_editor m)
 add_test(NAME test_editor COMMAND test_editor)
 
+# test_math pulls in the full processing.h (min/max + array machinery live there
+# and drag in raylib/freetype symbols at link time), so it links the same
+# vendored static deps as the IDE. It never opens a window, so it is safe to
+# run headlessly: only the pure math under test executes.
+add_executable(test_math tests/test_math.c)
+target_include_directories(test_math PRIVATE
+  "${CMAKE_SOURCE_DIR}" "${RAYLIB_SRC}" "${FREETYPE_SRC}" "${FREETYPE_BUILD}")
+if(PDEIDE_STATIC_DEPS)
+  add_dependencies(test_math static_archives)
+  target_compile_definitions(test_math PRIVATE $<$<PLATFORM_ID:Linux>:X11>)
+  if(UNIX AND NOT APPLE)
+    find_package(OpenGL REQUIRED)
+    find_package(X11 REQUIRED)
+    target_link_libraries(test_math
+      "${RAYLIB_STATIC}" "${FREETYPE_STATIC}"
+      OpenGL::GL X11::X11 m pthread rt ${CMAKE_DL_LIBS})
+  elseif(APPLE)
+    target_link_libraries(test_math
+      "${RAYLIB_STATIC}" "${FREETYPE_STATIC}"
+      "-framework Cocoa" "-framework IOKit" "-framework CoreFoundation"
+      "-framework CoreVideo" "-framework OpenGL")
+  elseif(WIN32)
+    target_link_libraries(test_math
+      "${RAYLIB_STATIC}" "${FREETYPE_STATIC}"
+      gdi32 opengl32 winmm user32 shell32 ole32)
+  endif()
+else()
+  target_include_directories(test_math PRIVATE ${RAYLIB_INCLUDE_DIRS} ${FREETYPE_INCLUDE_DIRS})
+  target_link_libraries(test_math ${RAYLIB_LIBRARIES} ${FREETYPE_LIBRARIES} m)
+  target_link_libraries(test_math ${RAYLIB_LDFLAGS} ${FREETYPE_LDFLAGS})
+endif()
+add_test(NAME test_math COMMAND test_math)
+
 # ----------------------------------------------------------------------
 # Linux self-contained release tarball (staged, not installed system-wide)
 # Only meaningful with static deps: the bundles are the point of a

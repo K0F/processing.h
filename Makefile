@@ -27,6 +27,8 @@ pdeide: static
 test:
 	gcc tests/test_editor.c editor.c -o tests/test_editor -I. -Wall -Wextra \
 		-lm && ./tests/test_editor
+	gcc tests/test_math.c -o tests/test_math -I. $(shell ./pdedeps --includes) \
+		$(shell ./pdedeps --libs) && ./tests/test_math
 
 clean:
-	rm -f pdeide sketch tests/test_editor *.o
+	rm -f pdeide sketch tests/test_editor tests/test_math *.o

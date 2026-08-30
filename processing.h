@@ -2511,8 +2511,41 @@ static inline void blendMode(int mode) { (void)mode; }
 
 // math //////////////////////////////////////////////////////////////////////////////////
 
-#define min(a, b) (((a) < (b)) ? (a) : (b))
-#define max(a, b) (((a) > (b)) ? (a) : (b))
+// min/max: 2-arg scalar (ternary macro, preserves Processing semantics and the
+// common type of mixed int/float args), 3-arg scalar, and int[]/float[] array
+// forms (length via _pde_len).
+static inline int    _pde_min3i(int a, int b, int c) { return ((a < b) ? a : b) < c ? ((a < b) ? a : b) : c; }
+static inline float  _pde_min3f(float a, float b, float c) { return (a < b ? a : b) < c ? (a < b ? a : b) : c; }
+static inline int    _pde_max3i(int a, int b, int c) { return ((a > b) ? a : b) > c ? ((a > b) ? a : b) : c; }
+static inline float  _pde_max3f(float a, float b, float c) { return (a > b ? a : b) > c ? (a > b ? a : b) : c; }
+static inline int    _pde_min_arr_int(int *arr, int n) {
+  if (n <= 0) return 0; int r = arr[0]; for (int i = 1; i < n; i++) if (arr[i] < r) r = arr[i]; return r;
+}
+static inline float  _pde_min_arr_float(float *arr, int n) {
+  if (n <= 0) return 0.0f; float r = arr[0]; for (int i = 1; i < n; i++) if (arr[i] < r) r = arr[i]; return r;
+}
+static inline int    _pde_max_arr_int(int *arr, int n) {
+  if (n <= 0) return 0; int r = arr[0]; for (int i = 1; i < n; i++) if (arr[i] > r) r = arr[i]; return r;
+}
+static inline float  _pde_max_arr_float(float *arr, int n) {
+  if (n <= 0) return 0.0f; float r = arr[0]; for (int i = 1; i < n; i++) if (arr[i] > r) r = arr[i]; return r;
+}
+#define MIN3_SEL(X)   _Generic((X), int: _pde_min3i, default: _pde_min3f)
+#define MAX3_SEL(X)   _Generic((X), int: _pde_max3i, default: _pde_max3f)
+#define MINARR_SEL(X) _Generic(&(X)[0], int *: _pde_min_arr_int, float *: _pde_min_arr_float, \
+    default: _pde_min_arr_float)
+#define MAXARR_SEL(X) _Generic(&(X)[0], int *: _pde_max_arr_int, float *: _pde_max_arr_float, \
+    default: _pde_max_arr_float)
+#define MIN_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define min(...) MIN_CHOOSER(__VA_ARGS__, _pde_min3, _pde_min2, _pde_minarr)(__VA_ARGS__)
+#define _pde_min2(a, b)       (((a) < (b)) ? (a) : (b))
+#define _pde_min3(a, b, c)    MIN3_SEL(a)((a), (b), (c))
+#define _pde_minarr(arr)      MINARR_SEL(arr)((arr), _pde_len(arr))
+#define MAX_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define max(...) MAX_CHOOSER(__VA_ARGS__, _pde_max3, _pde_max2, _pde_maxarr)(__VA_ARGS__)
+#define _pde_max2(a, b)       (((a) > (b)) ? (a) : (b))
+#define _pde_max3(a, b, c)    MAX3_SEL(a)((a), (b), (c))
+#define _pde_maxarr(arr)      MAXARR_SEL(arr)((arr), _pde_len(arr))
 
 // round/floor/ceil: Processing's float versions (float in, float out)
 static inline float _pde_roundf(float v) { return floorf(v + 0.5f); }
