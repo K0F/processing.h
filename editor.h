@@ -57,6 +57,7 @@ void ed_insert_newline(void);
 void ed_backspace(void);
 void ed_delete(void);
 void ed_delete_range(size_t a, size_t b);
+void ed_toggle_line_comment(void);
 void ed_select_all(void);
 void ed_pretty_format(void);
 

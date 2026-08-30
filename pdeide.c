@@ -464,13 +464,21 @@ static void stop_sketch(void) {
   for (int i = 0; i < 60; i++) {
     int st = 0, sig = -1;
     int r = plat_wait_nohang(sk.pid, &st, &sig);
-    if (r == 0) { sk.pid = 0; return; }
+    if (r == 0) break;
     plat_sleep_ms(50);
   }
-  plat_kill_force(sk.pid);
-  int st = 0, sig = -1;
-  plat_wait_nohang(sk.pid, &st, &sig);
+  if (sk.pid != 0 && plat_wait_nohang(sk.pid, &(int){0}, &(int){-1}) != 0) {
+    plat_kill_force(sk.pid);
+    for (int i = 0; i < 60; i++) {
+      int st = 0, sig = -1;
+      if (plat_wait_nohang(sk.pid, &st, &sig) == 0) break;
+      plat_sleep_ms(50);
+    }
+  }
+  if (sk.out_fd >= 0) { close(sk.out_fd); sk.out_fd = -1; }
+  if (sk.err_fd >= 0) { close(sk.err_fd); sk.err_fd = -1; }
   sk.pid = 0;
+  state = ST_IDLE;   /* re-enable Run / Ctrl-R / keyboard input */
 }
 
 /* run a shell command and split its stdout on whitespace into tok[], returning
@@ -1080,6 +1088,7 @@ static void frame(void) {
         if (k == KEY_R) { if (state == ST_IDLE) start_run(); continue; }
         if (k == KEY_S) { stop_sketch(); continue; }
         if (k == KEY_T) { ed_pretty_format(); continue; }
+        if (k == KEY_SLASH) { ed_toggle_line_comment(); continue; }
       }
       ed_handle_key(k, shift, ctrl);
       /* arm repeat timer for held navigation/editing keys */

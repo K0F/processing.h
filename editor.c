@@ -284,6 +284,31 @@ void ed_delete(void) {
   ed_delete_range(ed.cur, nxt);
 }
 
+/* Toggle a `// ` line comment on/off for the whole current line. A comment
+ * is inserted after the leading whitespace; uncommenting removes the `//`
+ * and one following space. The cursor stays on the current line, snapped to
+ * the front of any region the toggle removes. */
+void ed_toggle_line_comment(void) {
+  int li = ed_cur_line();
+  size_t ls = ed_line_start(li);
+  size_t ll = ed_line_len(li);
+  size_t ws = 0;
+  while (ws < ll && (ed.buf[ls+ws]==' ' || ed.buf[ls+ws]=='\t')) ws++;
+  if (ll - ws >= 2 && ed.buf[ls+ws]=='/' && ed.buf[ls+ws+1]=='/') {
+    size_t rm = 2;
+    if (ll - ws >= 3 && ed.buf[ls+ws+2]==' ') rm = 3;
+    size_t zone = ls + ws + rm;
+    if (ed.cur > ls + ws && ed.cur < zone) ed.cur = ls + ws;
+    else if (ed.cur >= zone) ed.cur -= rm;
+    ed_delete_range(ls + ws, zone);
+  } else {
+    ed_insert_at(ls + ws, "// ", 3);
+    if (ed.cur >= ls + ws) ed.cur += 3;
+  }
+  ed.sel = SIZE_MAX;
+  ed.goal_col = -1;
+}
+
 /* movement; shift selects */
 static void ed_move(size_t target, bool shift) {
   if (shift && ed.sel == SIZE_MAX) ed.sel = ed.cur;

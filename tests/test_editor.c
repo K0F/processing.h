@@ -214,6 +214,30 @@ static void test_move_line(void) {
   CHECK(ed_line_of(ed.cur) == 0 && ed_line_of(ed.sel) == 1, "block up keeps sel lines 0..1, got cur=%d sel=%d", ed_line_of(ed.cur), ed_line_of(ed.sel));
 }
 
+static void test_toggle_line_comment(void) {
+  /* comment a line that has leading whitespace; then uncomment it again */
+  load("  aa\nbb\n");
+  ed.cur = 4;                                   /* just past "aa" */
+  ed_toggle_line_comment();
+  CHECK(is_text("  // aa\nbb\n"), "comment -> '  // aa', got '%.*s'", (int)ed.len, ed.buf);
+  CHECK(ed.cur == 7, "comment shifts cursor +3: cur=%zu", ed.cur);
+  ed_toggle_line_comment();
+  CHECK(is_text("  aa\nbb\n"), "uncomment -> '  aa', got '%.*s'", (int)ed.len, ed.buf);
+  CHECK(ed.cur == 4, "uncomment shifts cursor -3: cur=%zu", ed.cur);
+
+  /* uncommenting an already-commented line also strips one following space */
+  load("// hi there\nbb\n");
+  seek("hi");
+  ed_toggle_line_comment();
+  CHECK(is_text("hi there\nbb\n"), "uncomment existing -> 'hi there', got '%.*s'", (int)ed.len, ed.buf);
+
+  /* an empty line becomes a comment */
+  load("x\n\ny\n");
+  ed.cur = 2;                                    /* middle, empty line */
+  ed_toggle_line_comment();
+  CHECK(is_text("x\n// \ny\n"), "comment empty line -> '// ', got '%.*s'", (int)ed.len, ed.buf);
+}
+
 int main(void) {
   test_sel_range_ordering();
   test_get_selected_both_directions();
@@ -225,6 +249,7 @@ int main(void) {
   test_goal_column();
   test_click_to_off();
   test_move_line();
+  test_toggle_line_comment();
 
   printf("%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
