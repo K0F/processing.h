@@ -14,11 +14,21 @@
 #include <stdarg.h>
 #include <string.h>
 #include <math.h>
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#ifndef R_OK
+#define R_OK 4
+#endif
+#define access _access
+#define PROCESSING_WIN32 1
+#else
 #include <sys/time.h>
 #include <unistd.h>
+#endif
 // NOTE: <time.h> intentionally not included: sketches often declare a global
-// named "time", which would collide with time(). <sys/time.h> provides
-// gettimeofday() without declaring any symbol named "time".
+// named "time", which would collide with time(). <sys/time.h>/GetSystemTime
+// provide the current time without declaring any symbol named "time".
 
 // FreeType is used to load Terminus's EMBEDDED bitmap strikes so the running
 // sketch renders its default font exactly like the pixel-crisp editor font.
@@ -850,10 +860,26 @@ static void _civilFromEpoch(long long days, int *y, int *m, int *d) {
 
 typedef struct { int sec, minute, hour, day, month, year; } _PdeDateTime;
 
+#ifdef PROCESSING_WIN32
+/* seconds since the UNIX epoch via the 1601-based FILETIME clock */
+static long long _winEpochSec(void) {
+  FILETIME ft; GetSystemTimeAsFileTime(&ft);
+  ULARGE_INTEGER u;
+  u.LowPart = ft.dwLowDateTime;
+  u.HighPart = ft.dwHighDateTime;
+  return (long long)((u.QuadPart / 10000000LL) - 11644473600LL);
+}
+#endif
+
 static _PdeDateTime _nowParts(void) {
-  static struct timeval tv;
+  long long secs;
+#ifdef PROCESSING_WIN32
+  secs = _winEpochSec();
+#else
+  struct timeval tv;
   gettimeofday(&tv, NULL);
-  long long secs = (long long)tv.tv_sec;
+  secs = (long long)tv.tv_sec;
+#endif
   long long days = secs / 86400;
   long long rem = secs % 86400;
   if (rem < 0) { rem += 86400; days--; }

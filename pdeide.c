@@ -40,13 +40,26 @@
 #include <stdint.h>
 
 #include "editor.h"
+#include "platform.h"
 
-#include <unistd.h>
-#include <fcntl.h>
 #include <errno.h>
+
+#ifdef _WIN32
+#include <io.h>
+#include <direct.h>
+#include <process.h>
+#define read  _read
+#define close _close
+#ifndef ssize_t
+typedef intptr_t ssize_t;
+#endif
+#else
+#include <unistd.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#endif
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -318,7 +331,7 @@ static void ed_handle_key(int k, bool shift, bool ctrl) {
 /* persistent run/build                                                                            */
 /* ------------------------------------------------------------------ */
 typedef struct {
-  pid_t pid;
+  plat_pid_t pid;
   int   out_fd, err_fd;
   int   out_eof, err_eof;
   int   out_dead, err_dead;
@@ -334,43 +347,14 @@ static char sketch_bin[PATH_MAX];   /* compiled binary */
 
 /* spawn a command, capturing its output (stdout+stderr combined when
  * stdout_file is NULL; otherwise stdout goes to the file, stderr captured).
- * Returns the child's exit status, or -1 on exec/fork failure.
+ * Returns the child's exit status, or -1 on exec/spawn failure.
  * On success the captured output is stored (NUL-terminated) in *out. */
 static int spawn_capture(char *const argv[], const char *stdout_file, char **base_out) {
-  int p[2];
-  if (pipe(p) != 0) return -1;
-  pid_t pid = fork();
-  if (pid < 0) { close(p[0]); close(p[1]); return -1; }
-  if (pid == 0) {
-    close(p[0]);
-    dup2(p[1], STDERR_FILENO);
-    if (stdout_file) {
-      int fd = open(stdout_file, O_WRONLY|O_CREAT|O_TRUNC, 0644);
-      if (fd >= 0) dup2(fd, STDOUT_FILENO);
-      else close(STDOUT_FILENO);
-    } else {
-      dup2(p[1], STDOUT_FILENO);
-    }
-    if (p[1] > 2) close(p[1]);
-    execvp(argv[0], argv);
-    _exit(127);
-  }
-  close(p[1]);
-  size_t cap = 65536, n = 0; char *buf = malloc(cap); buf[0] = 0;
-  for (;;) {
-    char tmp[4096];
-    ssize_t r = read(p[0], tmp, sizeof tmp);
-    if (r > 0) {
-      if (n + (size_t)r + 1 > cap) { while (n + (size_t)r + 1 > cap) cap *= 2; buf = realloc(buf, cap); }
-      memcpy(buf + n, tmp, (size_t)r); n += (size_t)r; buf[n] = 0;
-    } else if (r == 0) break;
-    else if (errno != EINTR) break;
-  }
-  close(p[0]);
-  int status = 0; waitpid(pid, &status, 0);
-  *base_out = buf;
-  if (WIFEXITED(status)) return WEXITSTATUS(status);
-  return -1;
+  char *buf = NULL;
+  int st = plat_spawn_capture(argv, stdout_file, &buf);
+  if (st < 0) return -1;
+  *base_out = buf ? buf : str_dup("");
+  return st;
 }
 
 /* Parse one diagnostic line of the form
@@ -474,30 +458,28 @@ static void stream_drain(int fd, StreamBuf *sb) {
 
 /* stop the running sketch */
 static void stop_sketch(void) {
-  if (state != ST_RUN || sk.pid <= 0) return;
-  kill(sk.pid, SIGTERM);
+  if (state != ST_RUN || sk.pid == 0) return;
+  plat_kill(sk.pid);
   /* wait a moment; escalate */
   for (int i = 0; i < 60; i++) {
-    int st; pid_t r = waitpid(sk.pid, &st, WNOHANG);
-    if (r == sk.pid) { sk.pid = 0; return; }
-    usleep(50000);
+    int st = 0, sig = -1;
+    int r = plat_wait_nohang(sk.pid, &st, &sig);
+    if (r == 0) { sk.pid = 0; return; }
+    plat_sleep_ms(50);
   }
-  kill(sk.pid, SIGKILL);
-  waitpid(sk.pid, NULL, 0);
+  plat_kill_force(sk.pid);
+  int st = 0, sig = -1;
+  plat_wait_nohang(sk.pid, &st, &sig);
   sk.pid = 0;
 }
 
 /* run a shell command and split its stdout on whitespace into tok[], returning
  * the token count (used to fetch compiler flags like pkg-config's). */
 static int flags_tokens(const char *cmd, char tok[][256]) {
-  FILE *fp = popen(cmd, "r");
-  if (!fp) return 0;
-  char buf[4096];
-  size_t len = fread(buf, 1, sizeof buf - 1, fp);
-  buf[len] = 0;
-  pclose(fp);
+  char *out = plat_shell_read(cmd);
+  if (!out) return 0;
   int n = 0;
-  char *p = buf;
+  char *p = out;
   while (*p && n < 16) {
     while (*p == ' ' || *p == '\t' || *p == '\n') p++;
     if (!*p) break;
@@ -506,6 +488,7 @@ static int flags_tokens(const char *cmd, char tok[][256]) {
     int l = (int)(p - s);
     memcpy(tok[n], s, (size_t)l); tok[n][l] = 0; n++;
   }
+  free(out);
   return n;
 }
 
@@ -608,7 +591,7 @@ static int build_pipeline(void) {
     free(gerr);
   }
 
-  chmod(sketch_out, 0755);
+  plat_chmod_exec(sketch_out);
   strncpy(sketch_bin, sketch_out, sizeof sketch_bin - 1);
   return 0;
 }
@@ -621,31 +604,19 @@ static void start_run(void) {
   if (build_pipeline() != 0) { state = ST_IDLE; return; }
   con_add("== build ok, launching ==", CON_OK);
   /* launch the sketch asynchronously */
-  int o[2], e[2];
-  if (pipe(o) != 0 || pipe(e) != 0) {
-    state = ST_IDLE; con_add("run: pipe failed", CON_ERR); return;
+  int of = -1, ef = -1;
+  plat_pid_t pid = 0;
+  char *argv2[] = { sketch_bin, NULL };
+  if (plat_spawn_run(argv2, build_dir[0] ? build_dir : NULL, &of, &ef, &pid) != 0) {
+    state = ST_IDLE; con_add("run: spawn failed", CON_ERR); return;
   }
-  pid_t pid = fork();
-  if (pid < 0) { state = ST_IDLE; con_add("run: fork failed", CON_ERR); return; }
-  if (pid == 0) {
-    close(o[0]); dup2(o[1], STDOUT_FILENO);
-    close(e[0]); dup2(e[1], STDERR_FILENO);
-    /* stdin from /dev/null */
-    int nullfd = open("/dev/null", O_RDONLY); if (nullfd >= 0) dup2(nullfd, STDIN_FILENO);
-    /* chdir into build dir so relative assets (terminus.ttf) resolve */
-    if (build_dir[0]) chdir(build_dir);
-    execl(sketch_bin, sketch_bin, NULL);
-    _exit(127);
-  }
-  close(o[1]); close(e[1]);
-  sk.pid = pid; sk.out_fd = o[0]; sk.err_fd = e[0];
+  sk.pid = pid; sk.out_fd = of; sk.err_fd = ef;
   sk.out_eof = 0; sk.err_eof = 0;
   sout.n = 0; serr.n = 0;
-  /* make pipes non-blocking? we use non-blocking reads via O_NONBLOCK */
-  int fl = fcntl(sk.out_fd, F_GETFL, 0); fcntl(sk.out_fd, F_SETFL, fl | O_NONBLOCK);
-  fl = fcntl(sk.err_fd, F_GETFL, 0);     fcntl(sk.err_fd, F_SETFL, fl | O_NONBLOCK);
+  plat_set_nonblocking(sk.out_fd);
+  plat_set_nonblocking(sk.err_fd);
   state = ST_RUN;
-  con_add("== running (pid %d) ==", CON_OK, (int)pid);
+  con_add("== running (pid %ld) ==", CON_OK, (long)pid);
 }
 
 /* poll the running sketch each frame */
@@ -653,19 +624,17 @@ static void poll_sketch(void) {
   if (state != ST_RUN) return;
   if (!sk.out_eof) stream_drain(sk.out_fd, &sout);
   if (!sk.err_eof) stream_drain(sk.err_fd, &serr);
-  int status = 0;
-  pid_t r = waitpid(sk.pid, &status, WNOHANG);
-  if (r == sk.pid) {
+  int status = 0, sig = -1;
+  int r = plat_wait_nohang(sk.pid, &status, &sig);
+  if (r == 0) {
     if (sk.out_fd >= 0) close(sk.out_fd); if (sk.err_fd >= 0) close(sk.err_fd);
     sk.pid = 0;
-    if (WIFSIGNALED(status)) {
-      con_add("== sketch crashed (signal %d) ==", CON_ERR, WTERMSIG(status));
-    } else if (WIFEXITED(status)) {
-      int c = WEXITSTATUS(status);
-      if (c == 0) con_add("== sketch exited cleanly ==", CON_OK);
-      else        con_add("== sketch exited with code %d ==", CON_ERR, c);
+    if (sig >= 0) {
+      con_add("== sketch crashed (signal %d) ==", CON_ERR, sig);
+    } else if (status == 0) {
+      con_add("== sketch exited cleanly ==", CON_OK);
     } else {
-      con_add("== sketch exited ==", CON_OK);
+      con_add("== sketch exited with code %d ==", CON_ERR, status);
     }
     state = ST_IDLE;
   }
@@ -712,6 +681,9 @@ static void save_file(const char *path) {
 
 /* detect whether a native dialog backend is present (zenity/kdialog/...) */
 static int have_native_dialogs(void) {
+#ifdef _WIN32
+  return 0;   /* small C shell only: text input boxes are used instead */
+#else
   const char *bins[] = { "zenity", "kdialog", "yad", "qarma", "matedialog", "Xdialog", NULL };
   for (int i = 0; bins[i]; i++) {
     /* search PATH manually */
@@ -719,12 +691,13 @@ static int have_native_dialogs(void) {
     char *tok = strtok(path, ":");
     while (tok) {
       char f[PATH_MAX]; snprintf(f, sizeof f, "%s/%s", tok, bins[i]);
-      if (access(f, X_OK) == 0) { free(path); return 1; }
+      if (plat_file_access(f, 1) == 0) { free(path); return 1; }
       tok = strtok(NULL, ":");
     }
     free(path);
   }
   return 0;
+#endif
 }
 
 static int native_dialogs = 1, dialogs_checked = 0;
@@ -852,7 +825,7 @@ static void export_static(const char *dest_path) {
     free(lerr);
   }
 
-  chmod(dest_path, 0755);
+  plat_chmod_exec(dest_path);
   {   /* optional: strip to slim the binary */
     char *argv[] = { "strip", (char*)dest_path, NULL };
     char *serr = NULL;
@@ -1401,14 +1374,8 @@ static Font load_pixel_font(const char *path, int px) {
 
 int main(int argc, char **argv) {
   /* script dir = directory of this binary */
-  {
-    char buf[PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
-    if (n <= 0) { strcpy(script_dir, "."); }
-    else { buf[n] = 0; char *sl = strrchr(buf, '/'); if (sl) *sl = 0; snprintf(script_dir, sizeof script_dir, "%s", buf); }
-  }
+  plat_exe_dir(script_dir, sizeof script_dir);
 
-  if (!native_dialogs) { (void)0; }
   dialogs_checked = 1;
   native_dialogs = have_native_dialogs();
 
@@ -1440,21 +1407,25 @@ int main(int argc, char **argv) {
     load_file(argv[1]);
   } else {
     char def[PATH_MAX]; snprintf(def, sizeof def, "%s/sketch.pde", script_dir);
-    if (access(def, R_OK) == 0) load_file(def);
+    if (plat_file_access(def, 4) == 0) load_file(def);
   }
 
   /* build dir */
   {
-    char tmpl[] = "/tmp/pdeide.XXXXXX";
-    char *d = mkdtemp(tmpl);
-    if (d) snprintf(build_dir, sizeof build_dir, "%s", d);
-    else  snprintf(build_dir, sizeof build_dir, "/tmp/pdeide.%d", (int)getpid());
-    mkdir(build_dir, 0700);
+    if (plat_mkdtemp_dir("pdeide.XXXXXX", build_dir, sizeof build_dir) != 0) {
+#ifdef _WIN32
+      snprintf(build_dir, sizeof build_dir, "./pdeide_%ld", plat_getpid());
+      _mkdir(build_dir);
+#else
+      snprintf(build_dir, sizeof build_dir, "/tmp/pdeide.%ld", plat_getpid());
+      mkdir(build_dir, 0700);
+#endif
+    }
     /* copy terminus into build dir so running sketch resolves it */
     char fs[PATH_MAX]; char fs2[PATH_MAX];
     snprintf(fs, sizeof fs, "%s/terminus.ttf", script_dir);
     snprintf(fs2, sizeof fs2, "%s/terminus.ttf", build_dir);
-    if (access(fs, R_OK) == 0) {
+    if (plat_file_access(fs, 4) == 0) {
       FILE *a = fopen(fs, "rb"); FILE *b = fopen(fs2, "wb");
       if (a && b) { char bf[8192]; size_t r; while ((r=fread(bf,1,sizeof bf,a))>0) fwrite(bf,1,r,b); }
       if (a) fclose(a); if (b) fclose(b);
