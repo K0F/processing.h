@@ -17,6 +17,39 @@ option(PDEIDE_STATIC_DEPS "Build static raylib+freetype into build/static via Ex
 set(PDEIDE_STATIC_DIR "${CMAKE_SOURCE_DIR}/build/static")
 
 # ----------------------------------------------------------------------
+# vendored submodules (third_party/raylib, third_party/freetype) are not
+# checked out in a fresh clone; bootstrap them at configure time when the
+# static dependency bundles are requested.
+# ----------------------------------------------------------------------
+if(PDEIDE_STATIC_DEPS)
+  set(_PDEIDE_MISSING_SUBMODS "")
+  foreach(_sub third_party/raylib third_party/freetype)
+    if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${_sub}/CMakeLists.txt" AND
+       NOT EXISTS "${CMAKE_SOURCE_DIR}/${_sub}/src/raylib.h")
+      list(APPEND _PDEIDE_MISSING_SUBMODS "${_sub}")
+    endif()
+  endforeach()
+  if(_PDEIDE_MISSING_SUBMODS)
+    find_package(Git QUIET)
+    if(Git_FOUND)
+      message(STATUS "initializing git submodules: ${_PDEIDE_MISSING_SUBMODS}")
+      execute_process(
+        COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        RESULT_VARIABLE _pdeide_submod_rc)
+      if(NOT _pdeide_submod_rc EQUAL 0)
+        message(FATAL_ERROR "Failed to initialize git submodules "
+          "(${_PDEIDE_MISSING_SUBMODS}). Run manually:\n"
+          "  git submodule update --init --recursive")
+      endif()
+    else()
+      message(FATAL_ERROR "Vendored dependencies ${_PDEIDE_MISSING_SUBMODS} are "
+        "missing and git was not found. Run:\n  git submodule update --init --recursive")
+    endif()
+  endif()
+endif()
+
+# ----------------------------------------------------------------------
 # static dependency bundles (used by both the IDE link and the Export step)
 # ----------------------------------------------------------------------
 if(PDEIDE_STATIC_DEPS)
@@ -124,7 +157,10 @@ add_test(NAME test_editor COMMAND test_editor)
 
 # ----------------------------------------------------------------------
 # Linux self-contained release tarball (staged, not installed system-wide)
+# Only meaningful with static deps: the bundles are the point of a
+# self-contained release.
 # ----------------------------------------------------------------------
+if(PDEIDE_STATIC_DEPS)
 # The produced directory mirrors the repo root layout, so the IDE's Run and
 # Export steps find pde2c, the vendored static archives and the fonts at the
 # exact relative paths they expect, no matter where the tarball is unpacked.
@@ -150,6 +186,7 @@ add_custom_target(release
   COMMAND ${CMAKE_COMMAND} -E echo "tarball: ${CMAKE_BINARY_DIR}/pdeide-linux.tar.gz"
   USES_TERMINAL
 )
+endif()
 
 install(TARGETS pdeide pde2c test_editor RUNTIME DESTINATION bin)
 install(FILES processing.h editor.h platform.h terminus.ttf terminus_ttf.h sketch.pde DESTINATION share/pdeide)
