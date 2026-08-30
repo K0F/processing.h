@@ -127,6 +127,12 @@ static Font font;
 static float fs = 12.0f;            /* pixel font size (crisp with POINT filter) */
 static float line_h, char_w;        /* integer glyph metrics, set after load */
 
+/* manual key auto-repeat (raylib does not synthesize repeats for GetKeyPressed) */
+#define KEYREP_DELAY 0.42
+#define KEYREP_RATE  0.035
+static int    key_repeat_key  = 0;
+static double key_repeat_timer = 0;
+
 /* ------------------------------------------------------------------ */
 /* olive dark palette                                                  */
 /* ------------------------------------------------------------------ */
@@ -151,10 +157,10 @@ static float line_h, char_w;        /* integer glyph metrics, set after load */
 #define OL_CURSOR  ((Color){196, 202, 180, 255})
 #define OL_ERRBAR  ((Color){200, 84, 74, 255})
 #define OL_ERRBG   ((Color){56, 34, 30, 200})
-#define OL_KW      ((Color){163, 214, 168, 255})   /* keywords: light olive-green */
-#define OL_STR     ((Color){226, 196, 150, 255})   /* strings:  warm tan          */
-#define OL_NUM     ((Color){150, 205, 192, 255})   /* numbers:  pale teal         */
-#define OL_COM     ((Color){116, 126, 94, 255})    /* comments: muted olive       */
+#define OL_KW      ((Color){255, 204, 0, 255})     /* keywords: bright yellow #FFCC00 */
+#define OL_STR     ((Color){245, 245, 240, 255})   /* strings:  bright white          */
+#define OL_NUM     ((Color){235, 235, 230, 255})   /* numbers:  bright white          */
+#define OL_COM     ((Color){114, 122, 98, 255})    /* comments: muted grey-olive      */
 
 /* ------------------------------------------------------------------ */
 /* editor syntax highlighting                                          */
@@ -244,7 +250,7 @@ static void hl_line(const char *str, int len, int *col, bool *in_comment,
         if (!isk) t = CTXT_NORM;
       }
     }
-    else { *col += 1; i++; continue; }    /* punctuation: single default char */
+    else { t = CTXT_NORM; i++; }          /* punctuation: single default char */
 
     if (*nruns < maxruns) { runs[*nruns].col = *col; runs[*nruns].len = i - s; runs[*nruns].t = t; (*nruns)++; }
     *col += (i - s);
@@ -329,6 +335,16 @@ static size_t ed_line_len(int li) {
   return e - s;
 }
 static int ed_lines(void) { ed_ensure_lines(); return ed.line_count; }
+
+static Color hl_color(CodeT t) {
+  switch (t) {
+    case CTXT_KW:  return OL_KW;
+    case CTXT_STR: return OL_STR;
+    case CTXT_NUM: return OL_NUM;
+    case CTXT_COM: return OL_COM;
+    default:       return OL_TEXT;
+  }
+}
 
 /* per-line block-comment-on state (recomputed each frame) so a multi-line
  * block comment keeps its color across the visible window */
@@ -485,6 +501,54 @@ static size_t ed_click_to_off(float mx, float my, int area_left, int area_top) {
   if (target_col < 0) target_col = 0;
   if (target_col > (long)ll) target_col = ll;
   return ls + (size_t)target_col;
+}
+
+/* highest-priority held key among the auto-repeat set, or 0 */
+static int ed_held_repeat_key(void) {
+  const int order[] = { KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_BACKSPACE,
+                        KEY_DELETE, KEY_HOME, KEY_END, KEY_PAGE_UP, KEY_PAGE_DOWN };
+  for (int i = 0; i < (int)(sizeof order / sizeof order[0]); i++)
+    if (IsKeyDown(order[i])) return order[i];
+  return 0;
+}
+
+/* apply a single editor keystroke (shared by press + auto-repeat) */
+static void ed_handle_key(int k, bool shift, bool ctrl) {
+  if (!ctrl) {
+    switch (k) {
+      case KEY_BACKSPACE: ed_backspace(); break;
+      case KEY_DELETE:    ed_delete(); break;
+      case KEY_LEFT:      ed_move_left(shift); break;
+      case KEY_RIGHT:     ed_move_right(shift); break;
+      case KEY_UP:        ed_move_up_down(-1, shift); break;
+      case KEY_DOWN:      ed_move_up_down(1, shift); break;
+      case KEY_HOME:      ed_move_home(shift); break;
+      case KEY_END:       ed_move_end(shift); break;
+      case KEY_PAGE_UP:   ed_move_page(-1, shift); break;
+      case KEY_PAGE_DOWN: ed_move_page(1, shift); break;
+      case KEY_ENTER: case KEY_KP_ENTER: ed_insert_newline(); break;
+      case KEY_TAB: { char t[] = "  "; ed_insert_text(t, 2); } break;
+      default: break;
+    }
+  } else {
+    switch (k) {
+      case KEY_A: { ed.sel = 0; ed.cur = ed.len; } break;
+      case KEY_X: case KEY_C: {
+        const char *s = ed_get_selected();
+        if (s) {
+          SetClipboardText(s);
+          if (k == KEY_X) { size_t a,b; ed_sel_range(&a,&b); ed_delete_range(a,b); ed.cur = a; }
+        }
+        free((void*)s);
+      } break;
+      case KEY_V: {
+        const char *cb = GetClipboardText();
+        if (cb) { size_t n = strlen(cb); if (n) ed_insert_text(cb, n); }
+      } break;
+      case KEY_Z: break; /* undo: not implemented */
+      default: break;
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1034,6 +1098,7 @@ static void frame(void) {
 
   /* gutter width */
   int lines_n = ed_lines();
+  hl_sweep(lines_n);               /* recompute per-line comment state */
   int gutter_w = 28 + (int)((lines_n >= 10000) ? 3 : (lines_n >= 1000 ? 2 : 1)) * 6;
 
   int area_l = gutter_w;
@@ -1054,52 +1119,18 @@ static void frame(void) {
   int maxlen = 0;
   for (int i = ed.view_line; i < lines_n && i - ed.view_line < vis_lines; i++) { int l = (int)ed_line_len(i); if (l > maxlen) maxlen = l; }
 
-  /* ---------- keyboard editing ---------- */
+  /* ---------- keyboard editing (with auto-repeat) ---------- */
   {
     bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
     bool ctrl  = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
 
-    int k = GetKeyPressed();
-    /* consume all queued keys */
-    while (k) {
-      if (!ctrl) {
-        switch (k) {
-          case KEY_BACKSPACE: ed_backspace(); break;
-          case KEY_DELETE:    ed_delete(); break;
-          case KEY_LEFT:      ed_move_left(shift); break;
-          case KEY_RIGHT:     ed_move_right(shift); break;
-          case KEY_UP:        ed_move_up_down(-1, shift); break;
-          case KEY_DOWN:      ed_move_up_down(1, shift); break;
-          case KEY_HOME:      ed_move_home(shift); break;
-          case KEY_END:       ed_move_end(shift); break;
-          case KEY_PAGE_UP:   ed_move_page(-1, shift); break;
-          case KEY_PAGE_DOWN: ed_move_page(1, shift); break;
-          case KEY_ENTER: case KEY_KP_ENTER: ed_insert_newline(); break;
-          case KEY_TAB: { char t[] = "  "; ed_insert_text(t, 2); } break;
-          default: break;
-        }
-      } else {
-        switch (k) {
-          case KEY_A: { /* select all */
-            ed.sel = 0; ed.cur = ed.len;
-          } break;
-          case KEY_X: case KEY_C: {
-            const char *s = ed_get_selected();
-            if (s) {
-              SetClipboardText(s);
-              if (k == KEY_X) { size_t a,b; ed_sel_range(&a,&b); ed_delete_range(a,b); ed.cur = a; }
-            }
-            free((void*)s);
-          } break;
-          case KEY_V: { /* paste from clipboard */
-            const char *cb = GetClipboardText();
-            if (cb) { size_t n = strlen(cb); if (n) ed_insert_text(cb, n); }
-          } break;
-          case KEY_Z: break; /* undo: not implemented */
-          default: break;
-        }
-      }
-      k = GetKeyPressed();
+    /* fresh key presses (single events) */
+    int k;
+    while ((k = GetKeyPressed()) != 0) {
+      ed_handle_key(k, shift, ctrl);
+      /* arm repeat timer for held navigation/editing keys */
+      key_repeat_key = ctrl ? 0 : ed_held_repeat_key();
+      key_repeat_timer = GetTime() + KEYREP_DELAY;
     }
 
     /* printable char input */
@@ -1108,6 +1139,16 @@ static void frame(void) {
       if (cp >= 32 && cp < 127) ed_insert_cp((unsigned)cp);
       else if (cp >= 160) ed_insert_cp((unsigned)cp);
     }
+
+    /* auto-repeat a held navigation/editing key */
+    int rep = ctrl ? 0 : ed_held_repeat_key();
+    if (rep) {
+      if (rep != key_repeat_key) { key_repeat_key = rep; key_repeat_timer = GetTime() + KEYREP_DELAY; }
+      else if (GetTime() >= key_repeat_timer) {
+        ed_handle_key(rep, shift, false);
+        key_repeat_timer = GetTime() + KEYREP_RATE;
+      }
+    } else key_repeat_key = 0;
   }
 
   /* horizontal scrolling with shift+wheel? use plain wheel over editor for
@@ -1173,17 +1214,28 @@ static void frame(void) {
     if (cols < 0) cols = 0;
     int start_col = ed.view_col;
     if (start_col > (int)ll) start_col = ll;
-    size_t trim = (size_t)start_col;
     int drawlen = (int)ll - start_col;
     if (drawlen > cols) drawlen = cols;
 
     BeginScissorMode(area_l, ed_top, area_w, ed_h);
     if (drawlen > 0) {
-      char *lined = malloc((size_t)drawlen + 1);
-      memcpy(lined, ed.buf + ls + trim, (size_t)drawlen); lined[drawlen] = 0;
-      float gx = area_l + (trim - (size_t)start_col) * char_w; /* equals area_l */
-      DrawTextEx(font, lined, (Vector2){gx, y}, fs, 0.0f, OL_TEXT);
-      free(lined);
+      /* lex the whole line for correct classification, draw only the visible slice */
+      bool ic = (li < hl_com_n) ? hl_com[li] : false;
+      int c0 = 0; Run runs[512]; int nruns = 0;
+      hl_line(ed.buf + ls, (int)ll, &c0, &ic, runs, &nruns, 512);
+      for (int ri = 0; ri < nruns; ri++) {
+        Run *r = &runs[ri];
+        long va = (long)r->col, vb = (long)r->col + r->len;
+        long vs = va > (long)start_col ? va : (long)start_col;
+        long ve = vb < (long)(start_col + drawlen) ? vb : (long)(start_col + drawlen);
+        if (ve <= vs) continue;
+        int wlen = (int)(ve - vs);
+        float gx = area_l + (vs - (long)start_col) * char_w;
+        char *sub = malloc((size_t)wlen + 1);
+        memcpy(sub, ed.buf + ls + (size_t)vs, (size_t)wlen); sub[wlen] = 0;
+        DrawTextEx(font, sub, (Vector2){gx, y}, fs, 0.0f, hl_color(r->t));
+        free(sub);
+      }
     }
     /* selection highlight */
     {
@@ -1194,19 +1246,22 @@ static void frame(void) {
           size_t c1 = (li==la) ? (sa - ls) : 0;
           size_t c2 = (li==lb) ? (sb - ls) : ll;
           if (c1 > ll) c1 = ll; if (c2 > ll) c2 = ll;
-          float selx = area_l + ((long)c1 > (long)start_col ? (long)c1 - start_col : 0) * char_w;
-          float selw = ((long)c2 - (long)start_col) * char_w;
-          if (c1 < (size_t)start_col) { selx = area_l; selw += ((long)start_col - (long)c1)*char_w; }
-          if (selw < 0) selw = 0;
-          DrawRectangle((int)selx, (int)y-1, (int)selw, (int)line_h, OL_SEL);
+          /* first/last selected column visible in this viewport */
+          long v1 = ((long)c1 > (long)start_col) ? (long)c1 : (long)start_col;
+          long v2 = ((long)c2 > (long)start_col) ? (long)c2 : (long)start_col;
+          long selwpx = (v2 - v1) * (long)char_w;
+          if (selwpx > 0) {
+            float selx = area_l + (v1 - (long)start_col) * char_w;
+            DrawRectangle((int)selx, (int)y-1, (int)selwpx, (int)line_h, OL_SEL);
+          }
         }
       }
     }
     EndScissorMode();
   }
 
-  /* cursor */
-  if (state == ST_IDLE || state == ST_BUILD) {
+  /* cursor (always visible so the caret position stays known) */
+  {
     double now = GetTime();
     double dt = now - last_blink;
     /* solid briefly on any input, then blink on a 0.5s cycle */
