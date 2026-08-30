@@ -543,18 +543,43 @@ static int build_pipeline(void) {
     char O[] = "-O2"; char Idir[PATH_MAX]; char *Idir_arg = malloc(4 + strlen(script_dir));
     sprintf(Idir_arg, "-I%s", script_dir);
     char out[PATH_MAX]; snprintf(out, sizeof out, "-o%s", sketch_out);
-    /* capture the FreeType cflags/libs from pkg-config (needed because the
-     * sketch runtime loads Terminus's embedded bitmap strikes via FreeType) */
-    static char ft_cf[8][256]; int n_ft_cf = flags_tokens("pkg-config --cflags freetype2 2>/dev/null", ft_cf);
-    static char ft_lib[4][256]; int n_ft_lib = flags_tokens("pkg-config --libs freetype2 2>/dev/null", ft_lib);
-    static const char *fixed[] = { "-lraylib", "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11", NULL };
-    int nfixed = (int)(sizeof fixed / sizeof fixed[0]) - 1;
-    char **argv = calloc((size_t)(7 + n_ft_cf + nfixed + n_ft_lib + 1), sizeof(char *));
+
+    /* Prefer the vendored static raylib+freetype that CMake builds into
+     * build/static (what the Export button links against too), so Run needs
+     * no system install. Otherwise fall back to system packages. */
+    char ray_static[PATH_MAX], ft_static[PATH_MAX], ray_inc[PATH_MAX],
+         ft_inc[PATH_MAX], ft_build_inc[PATH_MAX];
+    snprintf(ray_static, sizeof ray_static, "%s/build/static/raylib/raylib/libraylib.a", script_dir);
+    snprintf(ft_static,  sizeof ft_static,  "%s/build/static/freetype/libfreetype.a", script_dir);
+    int vendored = plat_file_access(ray_static, 0) == 0 &&
+                   plat_file_access(ft_static, 0) == 0;
+    /* fallback cflags/libs: the sketch runtime loads Terminus's embedded
+     * bitmap strikes via FreeType */
+    static char ft_cf[8][256]; int n_ft_cf = 0;
+    static char ft_lib[4][256]; int n_ft_lib = 0;
+    if (!vendored) {
+      n_ft_cf  = flags_tokens("pkg-config --cflags freetype2 2>/dev/null", ft_cf);
+      n_ft_lib = flags_tokens("pkg-config --libs freetype2 2>/dev/null", ft_lib);
+    }
+    static const char *gl[] = { "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11", NULL };
+    int n_gl = (int)(sizeof gl / sizeof gl[0]) - 1;
+
+    int cap = 5 + (vendored ? 3 + 2 + n_gl : n_ft_cf + 1 + n_ft_lib + n_gl) + 1;
+    char **argv = calloc((size_t)cap, sizeof(char *));
     int ai = 0;
     argv[ai++] = gcc; argv[ai++] = O; argv[ai++] = Idir_arg; argv[ai++] = sketch_c; argv[ai++] = out;
-    for (int i = 0; i < n_ft_cf; i++) argv[ai++] = ft_cf[i];
-    for (int i = 0; i < nfixed; i++) argv[ai++] = (char*)fixed[i];
-    for (int i = 0; i < n_ft_lib; i++) argv[ai++] = ft_lib[i];
+    if (vendored) {
+      snprintf(ray_inc,      sizeof ray_inc,      "-I%s/third_party/raylib/src", script_dir);
+      snprintf(ft_inc,       sizeof ft_inc,       "-I%s/third_party/freetype/include", script_dir);
+      snprintf(ft_build_inc, sizeof ft_build_inc, "-I%s/build/static/freetype/include", script_dir);
+      argv[ai++] = ray_inc; argv[ai++] = ft_inc; argv[ai++] = ft_build_inc;
+      argv[ai++] = ray_static; argv[ai++] = ft_static;
+    } else {
+      for (int i = 0; i < n_ft_cf; i++) argv[ai++] = ft_cf[i];
+      argv[ai++] = "-lraylib";
+      for (int i = 0; i < n_ft_lib; i++) argv[ai++] = ft_lib[i];
+    }
+    for (int i = 0; i < n_gl; i++) argv[ai++] = (char*)gl[i];
     argv[ai] = NULL;
     int rc = spawn_capture(argv, NULL, &gerr);
     free(argv);

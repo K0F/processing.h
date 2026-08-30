@@ -81,7 +81,7 @@ fi
 # raylib/rlgl/raymath on every compile (cuts turnaround from ~3s to ~0.2s).
 if [ "$SCRIPT_DIR/processing.h" -nt "$SCRIPT_DIR/processing.h.gch" ] || \
    [ ! -f "$SCRIPT_DIR/processing.h.gch" ]; then
-  if ! gcc -I"$SCRIPT_DIR" -x c-header "$SCRIPT_DIR/processing.h" \
+  if ! gcc $("$SCRIPT_DIR/pdedeps" --includes) -x c-header "$SCRIPT_DIR/processing.h" \
        -o "$SCRIPT_DIR/processing.h.gch" 2>/dev/null; then
     rm -f "$SCRIPT_DIR/processing.h.gch"   # stale/broken PCH: fall back to
   fi                                       # slow path (never fatal)
@@ -114,8 +114,8 @@ if ! "$SCRIPT_DIR/pde2c" "$TMP/combined.pde" > "$TMP/sketch.c" 2> "$TMP/pde2c.er
 fi
 
 # ---- compile to an optimized native binary ---------------------------------
-if ! gcc -O"$OPT" -I"$SCRIPT_DIR" "$TMP/sketch.c" -o "$OUT" \
-     -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 2> "$TMP/gcc.err"; then
+if ! gcc -O"$OPT" $("$SCRIPT_DIR/pdedeps" --includes) "$TMP/sketch.c" -o "$OUT" \
+     $("$SCRIPT_DIR/pdedeps" --libs) 2> "$TMP/gcc.err"; then
   echo "pdecc: compilation failed for $BNAME" >&2
   head -20 "$TMP/gcc.err" >&2
   if [ "$KEEP" = "1" ]; then

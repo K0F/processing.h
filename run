@@ -34,7 +34,8 @@ fi
 # forces a from-scratch run if the PCH ever goes stale.
 if [ "${PDE_NOPCH:-0}" != "1" ] && \
    { [ "$SCRIPT_DIR/processing.h" -nt "$SCRIPT_DIR/processing.h.gch" ] || [ ! -f "$SCRIPT_DIR/processing.h.gch" ]; }; then
-  gcc -I"$SCRIPT_DIR" -x c-header "$SCRIPT_DIR/processing.h" -o "$SCRIPT_DIR/processing.h.gch" || exit 1
+  gcc $("$SCRIPT_DIR/pdedeps" --includes) -x c-header "$SCRIPT_DIR/processing.h" \
+      -o "$SCRIPT_DIR/processing.h.gch" || exit 1
 fi
 
 # collect tabs: main tab first, then the rest alphabetically
@@ -59,8 +60,8 @@ fi
 
 # compile fast; on failure show a readable, source-mapped excerpt
 CFLAGS="${PDE_OPTS--O0 -pipe}"
-if ! gcc $CFLAGS -I"$SCRIPT_DIR" "$TMP/sketch.c" -o "$TMP/sketch" \
-     -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 \
+if ! gcc $CFLAGS $("$SCRIPT_DIR/pdedeps" --includes) "$TMP/sketch.c" -o "$TMP/sketch" \
+     $("$SCRIPT_DIR/pdedeps" --libs) \
      2> "$TMP/gcc.err"; then
   head -15 "$TMP/gcc.err"
   if [ "${PDE_KEEP:-0}" = "1" ]; then

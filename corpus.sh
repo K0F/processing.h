@@ -67,8 +67,8 @@ while IFS= read -r DIR; do
     [ -z "$DETAIL" ] && DETAIL="(no message)"
   elif [ "${PDE_CORPUS_TRANSPILE_ONLY:-0}" != "1" ]; then
     CFLAGS="${PDE_OPTS--O0 -pipe}"
-    if gcc $CFLAGS -I"$SCRIPT_DIR" "$BLD/sketch.c" -o "$BLD/sketch" \
-         -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 \
+    if gcc $CFLAGS $("$SCRIPT_DIR/pdedeps" --includes) "$BLD/sketch.c" \
+         -o "$BLD/sketch" $("$SCRIPT_DIR/pdedeps" --libs) \
          2> "$BLD/gcc.err"; then
       STATUS="PASS"
     else

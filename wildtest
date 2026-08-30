@@ -22,7 +22,7 @@ fi
 
 # precompiled header (same -I flags as the per-sketch gcc calls below)
 if [ "$SCRIPT_DIR/processing.h" -nt "$SCRIPT_DIR/processing.h.gch" ] || [ ! -f "$SCRIPT_DIR/processing.h.gch" ]; then
-  gcc -I"$SCRIPT_DIR" -x c-header "$SCRIPT_DIR/processing.h" -o "$SCRIPT_DIR/processing.h.gch" || exit 1
+  gcc $("$SCRIPT_DIR/pdedeps" --includes) -x c-header "$SCRIPT_DIR/processing.h" -o "$SCRIPT_DIR/processing.h.gch" || exit 1
 fi
 
 TMP=$(mktemp -d /tmp/pdewild.XXXXXX)
@@ -53,7 +53,7 @@ for dir in $(find "$TREE" -type f -name '*.pde' -exec dirname {} \; | sort -u); 
     continue
   fi
 
-  if gcc -fsyntax-only -I"$SCRIPT_DIR" "$TMP/sketch.c" 2> "$TMP/gcc.err"; then
+  if gcc -fsyntax-only $("$SCRIPT_DIR/pdedeps" --includes) "$TMP/sketch.c" 2> "$TMP/gcc.err"; then
     printf '%-46s PASS\n' "$tag"
     pass=$((pass + 1))
   else

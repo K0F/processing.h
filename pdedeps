@@ -1,0 +1,32 @@
+#!/bin/sh
+# pdedeps — print the gcc flag fragments for building a sketch against
+# raylib + FreeType. Shared by run/pdecc/wildtest/corpus.sh.
+#
+#   ./pdedeps --includes    include-search flags only (-I...)
+#   ./pdedeps --libs        link flags only (static archive paths / -l libs)
+#
+# Prefers the vendored static archives + headers that `cmake` builds under
+# build/static and third_party/ (the self-contained setup), and falls back
+# to system-installed raylib/freetype via pkg-config.
+set -u
+
+base=$(dirname "$(readlink -f "$0")")
+ray_static="$base/build/static/raylib/raylib/libraylib.a"
+ft_static="$base/build/static/freetype/libfreetype.a"
+
+if [ -f "$ray_static" ] && [ -f "$ft_static" ]; then
+  INC="-I$base -I$base/third_party/raylib/src -I$base/third_party/freetype/include -I$base/build/static/freetype/include"
+  if [ "${1:-}" = "--libs" ]; then
+    echo "$ray_static $ft_static -lGL -lm -lpthread -ldl -lrt -lX11"
+  else
+    echo "$INC"
+  fi
+else
+  FT_CF=$(pkg-config --cflags freetype2 2>/dev/null)
+  FT_LB=$(pkg-config --libs freetype2 2>/dev/null)
+  if [ "${1:-}" = "--libs" ]; then
+    echo "-lraylib $FT_LB -lGL -lm -lpthread -ldl -lrt -lX11"
+  else
+    echo "-I$base $FT_CF"
+  fi
+fi
