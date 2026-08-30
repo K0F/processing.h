@@ -3002,18 +3002,39 @@ static inline void cursor1(int cursorType) {
 #define cursor(...) CURSOR_CHOOSER(0, ##__VA_ARGS__, cursor1, cursor0)(__VA_ARGS__)
 static inline void noCursor(void) { HideCursor(); }
 
-// G9 data conversion (stubs; `char(x)` is already valid C as a cast)
+// G9 data conversion (byte()/boolean() stubs; `char(x)` is already valid C as
+// a cast). binary() emits the low `digits` bits as an ASCII string (default
+// full 32-bit two's-complement width); unbinary() parses them back.
 static inline unsigned char _pde_byte(long long v) { (void)v; return 0; /* TODO: unimplemented */ }
 #define byte(X) _Generic((X), default: _pde_byte)((long long)(X))
 static inline bool _pde_boolean(unsigned int v) { (void)v; return false; /* TODO: unimplemented */ }
 #define boolean(X) _Generic((X), default: _pde_boolean)((unsigned int)(X))
-static inline const char *_pde_binary1(unsigned int v) { (void)v; return "0"; /* TODO: unimplemented */ }
 static inline const char *_pde_binary2(unsigned int v, int digits) {
-  (void)v; (void)digits; return "0"; /* TODO: unimplemented */
+  static char _pdeBinBufs[4][33];
+  static int _pdeBinIdx = 0;
+  char *out = _pdeBinBufs[_pdeBinIdx];
+  _pdeBinIdx = (_pdeBinIdx + 1) & 3;
+  if (digits < 0) digits = 0;
+  if (digits > 32) digits = 32;
+  for (int i = 0; i < digits; i++)
+    out[i] = (v & (1u << (digits - 1 - i))) ? '1' : '0';
+  out[digits] = '\0';
+  return out;
 }
+static inline const char *_pde_binary1(unsigned int v) { return _pde_binary2(v, 32); }
 #define BINARY_CHOOSER(_1, _2, _3, NAME, ...) NAME
 #define binary(...) BINARY_CHOOSER(0, ##__VA_ARGS__, _pde_binary2, _pde_binary1)(__VA_ARGS__)
-static inline int unbinary(const char *s) { (void)s; return 0; /* TODO: unimplemented */ }
+static inline int unbinary(const char *s) {
+  if (!s) return 0;
+  int neg = 0;
+  if (*s == '-') { neg = 1; s++; }
+  unsigned int v = 0;
+  for (; *s; s++) {
+    if (*s == '1') v = (v << 1) | 1u;
+    else if (*s == '0') v <<= 1;
+  }
+  return neg ? -(int)v : (int)v;
+}
 
 // G10 string utilities (standalone forms; String methods need pde2c)
 static inline const char **trim(const char **strs) {

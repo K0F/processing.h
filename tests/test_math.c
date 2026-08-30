@@ -5,6 +5,7 @@
 #include "processing.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 static int failures = 0;
@@ -101,6 +102,30 @@ static void test_delay(void) {
   delay(-5);
 }
 
+static void test_binary_unbinary(void) {
+  CHECK(strcmp(binary(205), "00000000000000000000000011001101") == 0,
+        "binary(205)=%s", binary(205));
+  CHECK(strlen(binary(5)) == 32, "binary(5) len=%zu want 32", strlen(binary(5)));
+  CHECK(strcmp(binary(5) + 29, "101") == 0, "binary(5) suffix=%s", binary(5) + 29);
+  CHECK(strcmp(binary(0), "00000000000000000000000000000000") == 0, "binary(0)=%s", binary(0));
+  CHECK(strcmp(binary(5, 8), "00000101") == 0, "binary(5,8)=%s", binary(5, 8));
+  CHECK(strcmp(binary(0xFFFFCC00u), "11111111111111111100110000000000") == 0,
+        "binary(0xFFFFCC00)=%s", binary(0xFFFFCC00u));
+  CHECK(strcmp(binary(0xFFFFCC00u, 16), "1100110000000000") == 0,
+        "binary(0xFFFFCC00,16)=%s", binary(0xFFFFCC00u, 16));
+  CHECK(strcmp(binary(5, 32), binary(5)) == 0, "binary(5,32) != binary(5)");
+  CHECK(strcmp(binary(5, 40), binary(5)) == 0, "binary(5,40) should clamp to 32");
+  CHECK(strcmp(binary(5, 0), "") == 0, "binary(5,0)=%s want empty", binary(5, 0));
+  CHECK(unbinary("00001000") == 8, "unbinary(00001000)=%d want 8", unbinary("00001000"));
+  CHECK(unbinary("11001101") == 205, "unbinary(11001101)=%d want 205", unbinary("11001101"));
+  CHECK(unbinary(binary(205)) == 205, "unbinary(binary(205))=%d want 205", unbinary(binary(205)));
+  CHECK(unbinary(binary(-1)) == -1, "unbinary(binary(-1))=%d want -1", unbinary(binary(-1)));
+  CHECK(unbinary("11111111111111111111111111111111") == -1,
+        "unbinary(all ones)=%d want -1", unbinary("11111111111111111111111111111111"));
+  CHECK(unbinary("-101") == -5, "unbinary(-101)=%d want -5", unbinary("-101"));
+  CHECK(unbinary("") == 0, "unbinary(\"\")=%d want 0", unbinary(""));
+}
+
 int main(void) {
   test_min2_scalar();
   test_max2_scalar();
@@ -111,6 +136,7 @@ int main(void) {
   test_min_max_heap_array();
   test_min_arr_count_form();
   test_delay();
+  test_binary_unbinary();
   printf("%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

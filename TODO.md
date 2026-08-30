@@ -136,7 +136,7 @@ shape/path subsystem. Each line below lands as its own commit.
 - [x] min()/max() 3-arg + int[]/float[] array forms  [1]
 - [ ] nf()/nfc() array forms; nfc() keeps 2 decimals  [2]
 - [ ] byte()/boolean() real clamp/bool conversions; char() kept as C cast  [1]
-- [ ] binary()/unbinary() real bit-string conversion  [1]
+- [x] binary()/unbinary() real bit-string conversion  [1]
 - [ ] hex() real (drop '#' prefix) + digits arity  [2]
 - [ ] PMatrix 2D API + printMatrix  [2]
 - [ ] trim(String[]) real (strip + realloc arrays)  [1]
