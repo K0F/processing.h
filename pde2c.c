@@ -397,6 +397,18 @@ typedef struct { char name[MAX_TOKEN_TEXT]; char type[MAX_TOKEN_TEXT]; } Symbol;
 static Symbol _symtab[MAX_SYMBOLS];
 static int _nsym = 0;
 
+// Track globals with non-constant initializers (= expr containing function calls)
+// so they can be deferred to _pde_global_init() instead of file-scope assignment.
+#define MAX_GLOBAL_NONCONST 256
+static char _global_nonconst_names[MAX_GLOBAL_NONCONST][MAX_TOKEN_TEXT];
+static int _nglobal_nonconst = 0;
+
+static bool is_nonconst_name(const char *name) {
+  for (int i = 0; i < _nglobal_nonconst; i++)
+    if (strcmp(_global_nonconst_names[i], name) == 0) return true;
+  return false;
+}
+
 static int matching_close(Token *t, int n, int open, const char *os, const char *cs) {
   int depth = 0;
   for (int i = open; i < n; i++) {
@@ -776,6 +788,31 @@ static void scan_globals(Token *t, int n) {
     reg_sym_typed(t[j].text, gtype);
     if (_nglob < MAX_SYMBOLS)
       snprintf(_globnames[_nglob++], MAX_TOKEN_TEXT, "%s", t[j].text);
+    // Detect non-constant initializer: scan ahead for = expr containing (
+    {
+      int k = j + 1;
+      while (k + 1 < n && t[k].type == TOKEN_SYMBOL &&
+             strcmp(t[k].text, "[") == 0 &&
+             t[k + 1].type == TOKEN_SYMBOL &&
+             strcmp(t[k + 1].text, "]") == 0)
+        k += 2;
+      while (k < n && t[k].type != TOKEN_SYMBOL &&
+             strcmp(t[k].text, "=") != 0) k++;
+      if (k < n && strcmp(t[k].text, "=") == 0) {
+        bool hasCall = false;
+        for (int u = k + 1; u < n && u < k + 120; u++) {
+          if (t[u].type == TOKEN_SYMBOL && strcmp(t[u].text, "(") == 0) {
+            hasCall = true; break;
+          }
+          if (t[u].type == TOKEN_SYMBOL && strcmp(t[u].text, ";") == 0) break;
+        }
+        if (hasCall && _nglobal_nonconst < MAX_GLOBAL_NONCONST) {
+          snprintf(_global_nonconst_names[_nglobal_nonconst],
+                   MAX_TOKEN_TEXT, "%s", t[j].text);
+          _nglobal_nonconst++;
+        }
+      }
+    }
   }
 }
 
@@ -1780,6 +1817,135 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  // Detect non-constant global initializers in the post-rewrite stream
+  // and build a skip array + collect init expressions for _pde_global_init().
+  // Only variables actually registered as globals (scan_globals runs at
+  // brace-depth-0, so locals inside functions are excluded).
+  bool *skipInit = calloc((size_t)num_tokens, sizeof(bool));
+  char initTexts[MAX_GLOBAL_NONCONST][512];
+  int nInitTexts = 0;
+  {
+    int braceDepth = 0;
+    for (int p = 0; p < num_tokens; p++) {
+      if (tokens[p].type == TOKEN_SYMBOL && strcmp(tokens[p].text, "{") == 0)
+        braceDepth++;
+      if (tokens[p].type == TOKEN_SYMBOL &&
+          strcmp(tokens[p].text, "}") == 0)
+        if (braceDepth > 0) braceDepth--;
+      if (braceDepth != 0) continue;
+      if (!is_plausible_type_token(tokens[p])) continue;
+      int q = p + 1;
+      while (q < num_tokens && tokens[q].type != TOKEN_IDENTIFIER) q++;
+      if (q >= num_tokens) continue;
+      if (!is_global_name(tokens[q].text)) continue;
+      // Skip past any plausible type tokens to find the actual variable name
+      while (q < num_tokens && is_plausible_type_token(tokens[q])) {
+        q++;
+        while (q < num_tokens && tokens[q].type != TOKEN_IDENTIFIER) q++;
+      }
+      if (q >= num_tokens) continue;
+      int r = q + 1;
+      while (r + 1 < num_tokens && tokens[r].type == TOKEN_SYMBOL &&
+             strcmp(tokens[r].text, "[") == 0 &&
+             tokens[r + 1].type == TOKEN_SYMBOL &&
+             strcmp(tokens[r + 1].text, "]") == 0)
+        r += 2;
+      while (r < num_tokens && tokens[r].type != TOKEN_SYMBOL &&
+             strcmp(tokens[r].text, "=") != 0)
+        r++;
+      if (r >= num_tokens || strcmp(tokens[r].text, "=") != 0) continue;
+      bool hasCall = false;
+      int initStart = r + 1;
+      int initEnd = initStart;
+      for (int u = initStart; u < num_tokens; u++) {
+        if (tokens[u].type == TOKEN_SYMBOL &&
+            strcmp(tokens[u].text, ";") == 0) {
+          initEnd = u;
+          break;
+        }
+        if (tokens[u].type == TOKEN_SYMBOL &&
+            strcmp(tokens[u].text, "(") == 0)
+          hasCall = true;
+      }
+      if (!hasCall) continue;
+      for (int u = r; u < initEnd; u++) skipInit[u] = true;
+      if (nInitTexts < MAX_GLOBAL_NONCONST) {
+        int pos = 0;
+        snprintf(initTexts[nInitTexts],
+                 sizeof(initTexts[nInitTexts]), "%s = ",
+                 tokens[q].text);
+        pos = (int)strlen(initTexts[nInitTexts]);
+        for (int u = r + 1; u < initEnd; u++) {
+          // new PVector(...) → pvector(...)
+          if (tokens[u].type == TOKEN_IDENTIFIER &&
+              strcmp(tokens[u].text, "new") == 0 &&
+              u + 2 < initEnd &&
+              tokens[u+1].type == TOKEN_IDENTIFIER &&
+              strcmp(tokens[u+1].text, "PVector") == 0 &&
+              tokens[u+2].type == TOKEN_SYMBOL &&
+              strcmp(tokens[u+2].text, "(") == 0) {
+            const char *s = "pvector(";
+            int slen = (int)strlen(s);
+            if (pos + slen + 1 < 512) {
+              memcpy(initTexts[nInitTexts] + pos, s, slen);
+              pos += slen;
+              initTexts[nInitTexts][pos++] = ' ';
+              initTexts[nInitTexts][pos] = '\0';
+            }
+            u += 2;
+            continue;
+          }
+          // new PImage(...) → pimage_new(...)
+          if (tokens[u].type == TOKEN_IDENTIFIER &&
+              strcmp(tokens[u].text, "new") == 0 &&
+              u + 2 < initEnd &&
+              tokens[u+1].type == TOKEN_IDENTIFIER &&
+              strcmp(tokens[u+1].text, "PImage") == 0 &&
+              tokens[u+2].type == TOKEN_SYMBOL &&
+              strcmp(tokens[u+2].text, "(") == 0) {
+            const char *s = "pimage_new(";
+            int slen = (int)strlen(s);
+            if (pos + slen + 1 < 512) {
+              memcpy(initTexts[nInitTexts] + pos, s, slen);
+              pos += slen;
+              initTexts[nInitTexts][pos++] = ' ';
+              initTexts[nInitTexts][pos] = '\0';
+            }
+            u += 2;
+            continue;
+          }
+          // color(...) → pack_color(...)
+          if (tokens[u].type == TOKEN_KEYWORD &&
+              strcmp(tokens[u].text, "color") == 0 &&
+              u + 1 < initEnd &&
+              tokens[u+1].type == TOKEN_SYMBOL &&
+              strcmp(tokens[u+1].text, "(") == 0) {
+            const char *s = "pack_color(";
+            int slen = (int)strlen(s);
+            if (pos + slen + 1 < 512) {
+              memcpy(initTexts[nInitTexts] + pos, s, slen);
+              pos += slen;
+              initTexts[nInitTexts][pos++] = ' ';
+              initTexts[nInitTexts][pos] = '\0';
+            }
+            u += 1;
+            continue;
+          }
+          int len = (int)strlen(tokens[u].text);
+          if (pos + len + 1 < 512) {
+            memcpy(initTexts[nInitTexts] + pos, tokens[u].text, len);
+            pos += len;
+            initTexts[nInitTexts][pos++] = ' ';
+            initTexts[nInitTexts][pos] = '\0';
+          }
+        }
+        if (pos > 0 && initTexts[nInitTexts][pos - 1] == ' ')
+          initTexts[nInitTexts][pos - 1] = '\0';
+        nInitTexts++;
+      }
+    }
+  }
+
   int i = 0;
   int pendingBracketClose = 0;
   bool pendingCallocType = false;
@@ -2556,6 +2722,24 @@ int main(int argc, char *argv[]) {
       }
     }
 
+    // Skip non-constant global initializer (= expr) at file scope
+    // '=' is tokenized as TOKEN_OPERATOR (see tokenizer), so length-check the
+    // text regardless of the token type tag.
+    if (current.type == TOKEN_OPERATOR &&
+        strcmp(current.text, "=") == 0 &&
+        braceDepth == 0 &&
+        skipInit && skipInit[i]) {
+      while (i < num_tokens &&
+             !(tokens[i].type == TOKEN_SYMBOL &&
+               strcmp(tokens[i].text, ";") == 0))
+        i++;
+      // the ';' terminates the (now) declaration-only global; the trailing
+      // newline keeps the following #line directive on its own line so gcc
+      // never sees '; #line' glued together.
+      if (i < num_tokens) { printf(";\n"); i++; }
+      continue;
+    }
+
     if (current.type == TOKEN_EOF) {
       break;
     }
@@ -2588,6 +2772,15 @@ int main(int argc, char *argv[]) {
   // sketch body (so they may call sketch-level helpers) and before main().
   emit_class_definitions();
 
+  // _pde_global_init() assigns non-constant global initializers
+  // that cannot be used as C file-scope constant expressions.
+  if (nInitTexts > 0) {
+    printf("\nstatic void _pde_global_init(void) {\n");
+    for (int g = 0; g < nInitTexts; g++)
+      printf("    %s;\n", initTexts[g]);
+    printf("}\n");
+  }
+
   printf("\n\nint main(void) {\n");
   // Processing's settings() (window size etc.) runs before setup()
   for (int p = 1; p < num_tokens; p++) {
@@ -2600,6 +2793,8 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
+  if (nInitTexts > 0)
+    printf("    _pde_global_init();\n");
   printf("    setup();\n");
   // a sketch that never calls size() still needs a window (Processing always
   // shows a canvas, even an empty setup)
@@ -2618,6 +2813,7 @@ int main(int argc, char *argv[]) {
   printf("}\n");
 
   free(tokens);
+  free(skipInit);
   free(source_buffer);
   return 0;
 }
