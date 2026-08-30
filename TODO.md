@@ -148,7 +148,7 @@ shape/path subsystem. Each line below lands as its own commit.
 - [ ] Route String receivers to _pde_str_*; expose PVector statics as accessors  [2]
 
 ### Tier C - Renderer state, small increment each
-- [ ] pushStyle()/popStyle() (save/restore existing fill/stroke/tint id + widths)  [1]
+- [x] pushStyle()/popStyle() (save/restore existing fill/stroke/tint id + widths)  [1]
 - [ ] fullScreen() (ToggleFullscreen + rederived layout, 0/1-arg forms)  [2]
 - [ ] colorMode() HSB real: store colors in HSB bucket, keep hue/sat/brightness outputs consistent  [2]
 - [ ] imageMode() + image blend() (compose via draw-into-texture with raylib blend modes)  [3]

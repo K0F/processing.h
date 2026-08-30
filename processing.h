@@ -2911,9 +2911,46 @@ static inline void fullScreen1(int renderer) { (void)renderer; /* TODO: unimplem
 #define FULLSCREEN_CHOOSER(_1, _2, NAME, ...) NAME
 #define fullScreen(...) FULLSCREEN_CHOOSER(0, ##__VA_ARGS__, fullScreen1, fullScreen0)(__VA_ARGS__)
 
-// G3 style stack
-static inline void pushStyle(void) { /* TODO: unimplemented */ }
-static inline void popStyle(void)  { /* TODO: unimplemented */ }
+// G3 style stack: pushStyle stores the current style and popStyle restores
+// the most recently pushed one. Saves fill/stroke (+ color, flag, weight,
+// cap, join) and tint color/flag plus rect/ellipse mode. Text/font state is
+// intentionally not included (Style in Processing is render-affecting state,
+// and font settings are managed separately). An over-deep push is a silent
+// no-op and an unbalanced pop does nothing, keeping sketches safe.
+typedef struct _PdeStyle {
+  Color fillColor;  bool useFill;
+  Color strokeColor; bool useStroke;
+  float strokeW;
+  int strokeCap, strokeJoin;
+  int rectModeState, ellipseModeState;
+  Color tintColor;  bool tintEnabled;
+} _PdeStyle;
+
+#define _PDE_STYLE_MAX 64
+static _PdeStyle _pdeStyleStack[_PDE_STYLE_MAX];
+static int _pdeStyleCount = 0;
+
+static inline void pushStyle(void) {
+  if (_pdeStyleCount >= _PDE_STYLE_MAX) return;
+  _pdeStyleStack[_pdeStyleCount++] = (_PdeStyle){
+    _fillColor, _useFill,
+    _strokeColor, _useStroke,
+    _strokeW,
+    _strokeCap, _strokeJoin,
+    _rectModeState, _ellipseModeState,
+    _tintColor, _tintEnabled
+  };
+}
+static inline void popStyle(void) {
+  if (_pdeStyleCount <= 0) return;
+  _PdeStyle s = _pdeStyleStack[--_pdeStyleCount];
+  _fillColor = s.fillColor; _useFill = s.useFill;
+  _strokeColor = s.strokeColor; _useStroke = s.useStroke;
+  _strokeW = s.strokeW;
+  _strokeCap = s.strokeCap; _strokeJoin = s.strokeJoin;
+  _rectModeState = s.rectModeState; _ellipseModeState = s.ellipseModeState;
+  _tintColor = s.tintColor; _tintEnabled = s.tintEnabled;
+}
 
 // G5 typography (textAlign/textFont/etc. are implemented elsewhere)
 static inline void textMode(int mode) { (void)mode; /* TODO: unimplemented */ }

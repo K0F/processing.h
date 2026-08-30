@@ -170,6 +170,55 @@ static void test_byte_boolean(void) {
   CHECK(boolean("hippopotamus") == false, "boolean(\"hippopotamus\") should be false");
 }
 
+static void test_style_stack(void) {
+  fill(255, 0, 0);
+  stroke(0, 255, 0);
+  strokeWeight(5.0f);
+  strokeCap(SQUARE);
+  strokeJoin(BEVEL);
+  rectMode(CENTER);
+  ellipseMode(CENTER);
+  tint(10, 20, 30);
+
+  pushStyle();
+  fill(0, 0, 255);
+  noStroke();
+  noTint();
+  strokeWeight(1.0f);
+  strokeCap(ROUND);
+  strokeJoin(MITER);
+  rectMode(CORNER);
+  ellipseMode(CORNER);
+  popStyle();
+
+  CHECK(_useFill && _fillColor.r == 255 && _fillColor.g == 0 && _fillColor.b == 0,
+        "fill not restored (r=%u g=%u b=%u)", _fillColor.r, _fillColor.g, _fillColor.b);
+  CHECK(_useStroke && _strokeColor.g == 255 && _strokeColor.r == 0,
+        "stroke not restored");
+  CHECK(_strokeW == 5.0f, "stroke weight not restored (%f)", _strokeW);
+  CHECK(_strokeCap == SQUARE && _strokeJoin == BEVEL,
+        "cap/join not restored (cap=%d join=%d)", _strokeCap, _strokeJoin);
+  CHECK(_rectModeState == CENTER && _ellipseModeState == CENTER,
+        "rect/ellipse mode not restored (rect=%d ellipse=%d)",
+        _rectModeState, _ellipseModeState);
+  CHECK(_tintEnabled && _tintColor.r == 10 && _tintColor.g == 20 && _tintColor.b == 30,
+        "tint not restored (r=%u g=%u b=%u)", _tintColor.r, _tintColor.g, _tintColor.b);
+
+  popStyle();
+  CHECK(_fillColor.r == 255 && _strokeW == 5.0f && _tintEnabled,
+        "unbalanced popStyle mutated style");
+
+  fill(1, 1, 1);
+  pushStyle();
+  fill(2, 2, 2);
+  pushStyle();
+  fill(3, 3, 3);
+  popStyle();
+  CHECK(_fillColor.r == 2, "inner popStyle wrong, got %u", _fillColor.r);
+  popStyle();
+  CHECK(_fillColor.r == 1, "outer popStyle wrong, got %u", _fillColor.r);
+}
+
 int main(void) {
   test_min2_scalar();
   test_max2_scalar();
@@ -182,6 +231,7 @@ int main(void) {
   test_delay();
   test_binary_unbinary();
   test_byte_boolean();
+  test_style_stack();
   test_trim();
   printf("%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
