@@ -6,12 +6,18 @@ single-header runtime API, and `pdeide` is a small editor wrapping the chain.
 
 ![pdeide — Processing sketch editor](screenshot.png)
 
-> ALPHA quality: useful, honest, incomplete. Not supported yet: inheritance,
-> generics, external Java libraries, `try/catch`, most `String` methods.
-> Real today: shapes, transforms, text, images, the G1-G11 reference-audit
-> stubs, plus true `min()/max()` (3-arg + arrays), `delay()`/`cursor()`/
-> `noCursor()`, `binary()`/`unbinary()`, `trim()`, `byte()` (clamp)/
-> `boolean()`, and `pushStyle()`/`popStyle()`.
+> ALPHA quality: useful, honest, incomplete.
+
+**Currently supported features:**
+-   **Core drawing**: shapes, transforms, text, images
+-   **Key APIs**: G1-G11 reference-audit stubs, `min()/max()` (3-arg + arrays), `delay()/cursor()/noCursor()`
+-   **Data conversion/manipulation**: `binary()/unbinary()`, `trim()`, `byte()` (clamped 0-255), `boolean()`
+-   **Style management**: `pushStyle()/popStyle()`
+
+**Limitations:**
+-   No inheritance, generics, or external Java libraries.
+-   `try/catch` not implemented.
+-   Most `String` methods are not yet supported.
 
 ## Quick start
 
@@ -32,27 +38,25 @@ cmake --build build --target release   # -> build/pdeide-linux.tar.gz
 
 ## Tests & health checks
 
-Unit tests cover the pde2c editor plus the pure `processing.h` functions
-(`make test` = 45 editor checks + 87 runtime checks; verified via `ctest`).
+**Unit tests** verify the `pde2c` transpiler and `processing.h` runtime functions.
+-   `make test` runs 45 editor checks and 87 runtime checks, verified by `ctest`.
 
-Real-world sketches are batch-checked against the transpiler:
+**Real-world corpus tests** run a batch of Processing sketches through the transpiler:
 
 ```sh
 ./wildtest ~/src/2010                # transpile + gcc -fsyntax-only, per-sketch pass/fail
-./wildtest ~/src/LearningProcessing  # book corpus (2015, processing-3 era)
+./wildtest ~/src/LearningProcessing  # book corpus (2015, Processing 3 era)
 ./corpus.sh ../2010                  # transpile + full link, summary to corpus-results.txt
 ```
 
-Current corpus status:
+**Current corpus status:**
 
-| corpus | pass |
-| ----- | ---- |
-| 2010 sketch archive (`~/src/2010`) | 21/168 |
-| shiffman/LearningProcessing | 122/428 |
+| Corpus | Pass Rate |
+| :------------------------------- | :--------: |
+| 2010 sketch archive (`~/src/2010`) | 21/168     |
+| shiffman/LearningProcessing      | 122/428    |
 
-Failures are missing third-party libraries (`OscP5`, `Minim`, `PeasyCam`,
-`PGraphicsOpenGL`, `Capture`/`Serial`, …) and other unimplemented API — both
-corpora verified byte-for-byte identical against the pre-feature baseline
-(no regressions). See [TODO.md](TODO.md) for the roadmap.
+Failures typically stem from missing third-party libraries (`OscP5`, `Minim`, `PeasyCam`, `PGraphicsOpenGL`, `Capture`/`Serial`, etc.) or other unimplemented Processing API. Both corpora have shown **no regressions** when compared byte-for-byte against the pre-feature baseline. See [TODO.md](TODO.md) for the roadmap.
+
 
 Author: Kof, 2026 — community software, provided as-is.
