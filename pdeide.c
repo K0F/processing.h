@@ -39,6 +39,8 @@
 #include <math.h>
 #include <stdint.h>
 
+#include "editor.h"
+
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -56,28 +58,6 @@
 
 static char script_dir[PATH_MAX];
 static char* str_dup(const char *s)    { size_t n = strlen(s)+1; char *d = malloc(n); memcpy(d, s, n); return d; }
-
-/* encode a Unicode codepoint into UTF-8; returns byte length */
-static int utf8_encode(unsigned cp, char out[4]) {
-  if (cp < 0x80)     { out[0]=(char)cp; return 1; }
-  if (cp < 0x800)    { out[0]=(char)(0xC0|(cp>>6)); out[1]=(char)(0x80|(cp&0x3F)); return 2; }
-  if (cp < 0x10000)  { out[0]=(char)(0xE0|(cp>>12)); out[1]=(char)(0x80|((cp>>6)&0x3F)); out[2]=(char)(0x80|(cp&0x3F)); return 3; }
-  out[0]=(char)(0xF0|(cp>>18)); out[1]=(char)(0x80|((cp>>12)&0x3F));
-  out[2]=(char)(0x80|((cp>>6)&0x3F)); out[3]=(char)(0x80|(cp&0x3F)); return 4;
-}
-
-/* step one codepoint back from offset i (i>0); returns new offset */
-static size_t cw_back(const char *s, size_t i) {
-  if (i == 0) return 0;
-  i--; while (i > 0 && ((unsigned char)s[i] & 0xC0) == 0x80) i--;
-  return i;
-}
-/* step one codepoint forward from offset i (i<len); returns new offset */
-static size_t cw_fwd(const char *s, size_t len, size_t i) {
-  if (i >= len) return len;
-  i++; while (i < len && ((unsigned char)s[i] & 0xC0) == 0x80) i++;
-  return i;
-}
 
 /* ------------------------------------------------------------------ */
 /* console (bounded line log)                                          */
@@ -120,8 +100,6 @@ static void con_clear(void) {
 /* ------------------------------------------------------------------ */
 /* editor buffer                                                       */
 /* ------------------------------------------------------------------ */
-#define BUF_INIT 65536
-
 static double last_blink = 0;   /* caret blink phase, reset on any input */
 static Font font;
 static float fs = 12.0f;            /* pixel font size (crisp with POINT filter) */
@@ -257,85 +235,6 @@ static void hl_line(const char *str, int len, int *col, bool *in_comment,
   }
 }
 
-typedef struct {
-  char  *buf; size_t cap, len;
-  size_t cur;            /* cursor byte offset */
-  size_t sel;            /* selection anchor, or SIZE_MAX for none */
-  int    view_line;      /* first visible source line */
-  int    view_col;       /* leftmost visible column (bytes) */
-  char   path[PATH_MAX]; /* loaded/saved file path ("" = unnamed) */
-  int    dirty;
-  /* cached line index */
-  size_t *line_off; int line_count, line_cap;
-  int    need_rebuild;
-  /* error markers: line numbers (1-based) to highlight */
-  int *err; int err_count, err_cap; int first_err; /* first_err cached */
-} Editor;
-
-static Editor ed;
-
-static void ed_init(void) {
-  ed.cap = BUF_INIT; ed.len = 0; ed.buf = calloc(ed.cap, 1);
-  ed.cur = 0; ed.sel = SIZE_MAX; ed.view_line = 0; ed.view_col = 0;
-  ed.path[0] = 0; ed.dirty = 0; ed.line_count = 0; ed.need_rebuild = 0;
-  ed.err = NULL; ed.err_count = 0; ed.err_cap = 0; ed.first_err = 0;
-}
-
-static void ed_clear_errors(void) { ed.err_count = 0; ed.first_err = 0; }
-
-static void ed_mark_error(int line) {
-  for (int i = 0; i < ed.err_count; i++) if (ed.err[i] == line) return;
-  if (ed.err_count == ed.err_cap) { ed.err_cap = ed.err_cap ? ed.err_cap*2 : 32; ed.err = realloc(ed.err, sizeof(int)*ed.err_cap); }
-  ed.err[ed.err_count++] = line;
-  if (ed.first_err == 0 || line < ed.first_err) ed.first_err = line;
-}
-
-static void ed_grow(size_t needlen) {
-  if (needlen + 1 > ed.cap) {
-    while (ed.cap < needlen + 1) ed.cap *= 2;
-    ed.buf = realloc(ed.buf, ed.cap);
-  }
-}
-
-/* rebuild line-start index */
-static void ed_rebuild_lines(void) {
-  if (ed.line_cap == 0) { ed.line_cap = 64; ed.line_off = malloc(sizeof(size_t)*ed.line_cap); }
-  ed.line_count = 0; ed.line_off[ed.line_count++] = 0;
-  for (size_t i = 0; i < ed.len; i++) {
-    if (ed.buf[i] == '\n') {
-      if (ed.line_count == ed.line_cap) { ed.line_cap *= 2; ed.line_off = realloc(ed.line_off, sizeof(size_t)*ed.line_cap); }
-      ed.line_off[ed.line_count++] = i + 1;
-    }
-  }
-  ed.need_rebuild = 0;
-}
-
-static void ed_touch(void) { ed.dirty = 1; ed.need_rebuild = 1; last_blink = GetTime(); }
-
-static void ed_ensure_lines(void) { if (ed.need_rebuild || ed.line_count == 0) ed_rebuild_lines(); }
-
-/* offset -> line index (0-based) */
-static int ed_line_of(size_t off) {
-  ed_ensure_lines();
-  int lo = 0, hi = ed.line_count - 1, ans = 0;
-  while (lo <= hi) {
-    int mid = (lo+hi)/2;
-    if (ed.line_off[mid] <= off) { ans = mid; lo = mid+1; } else hi = mid-1;
-  }
-  return ans;
-}
-/* line index (0-based) -> start offset */
-static size_t ed_line_start(int li) { ed_ensure_lines(); if (li<0) return 0; if (li>=ed.line_count) li=ed.line_count-1; return ed.line_off[li]; }
-/* line index -> line length in bytes (excluding trailing \n) */
-static size_t ed_line_len(int li) {
-  ed_ensure_lines();
-  size_t s = ed_line_start(li);
-  size_t e = (li+1 < ed.line_count) ? ed.line_off[li+1] : ed.len;
-  if (e > s && ed.buf[e-1] == '\n') e--;
-  return e - s;
-}
-static int ed_lines(void) { ed_ensure_lines(); return ed.line_count; }
-
 static Color hl_color(CodeT t) {
   switch (t) {
     case CTXT_KW:  return OL_KW;
@@ -364,144 +263,8 @@ static void hl_sweep(int nlines) {
   }
 }
 
-static int ed_col_of(size_t off) { return (int)(off - ed_line_start(ed_line_of(off))); }
-
-static void ed_insert_at(size_t off, const char *text, size_t n) {
-  ed_grow(ed.len + n);
-  memmove(ed.buf + off + n, ed.buf + off, ed.len - off);
-  memcpy(ed.buf + off, text, n);
-  ed.len += n;
-  ed_touch();
-}
-static void ed_delete_range(size_t a, size_t b) {
-  if (b <= a) return;
-  memmove(ed.buf + a, ed.buf + b, ed.len - b);
-  ed.len -= (b - a);
-  ed_touch();
-}
-
-/* Replace whole buffer contents with external text (file load). */
-static void ed_set_text(const char *text) {
-  size_t n = strlen(text);
-  ed_grow(n);
-  memcpy(ed.buf, text, n);
-  ed.len = n;
-  ed.cur = 0; ed.sel = SIZE_MAX; ed.view_line = 0; ed.view_col = 0;
-  ed_touch();
-}
-
-/* current line index for cursor */
-static int ed_cur_line(void) { return ed_line_of(ed.cur); }
-
-/* re-render a selection range from (sel, cur) inclusive ordering */
-static void ed_sel_range(size_t *a, size_t *b) {
-  if (ed.sel == SIZE_MAX) { *a = ed.cur; *b = ed.cur; return; }
-  *a = ed.sel < ed.cur ? ed.sel : ed.cur;
-  *b = ed.sel < ed.cur ? ed.cur : ed.sel;
-}
-
-static const char *ed_get_selected(void) {
-  size_t a, b; ed_sel_range(&a, &b);
-  if (a == b) return NULL;
-  char *out = malloc(b - a + 1);
-  memcpy(out, ed.buf + a, b - a); out[b-a] = 0;
-  return out;
-}
-
-/* ---------- editor editing operations ---------- */
-
-static void ed_insert_text(const char *text, size_t n) {
-  size_t a, b; ed_sel_range(&a, &b);
-  ed_delete_range(a, b);
-  ed_insert_at(a, text, n);
-  ed.cur = a + n;
-}
-static void ed_insert_cp(unsigned cp) {
-  char u[4]; int n = utf8_encode(cp, u);
-  ed_insert_text(u, n);
-}
-static void ed_insert_newline(void) {
-  int li = ed_cur_line();
-  size_t ls = ed_line_start(li);
-  /* copy the leading whitespace of the current line as auto-indent */
-  size_t ws = 0;
-  while (ls + ws < ed.cur && (ed.buf[ls+ws]==' ' || ed.buf[ls+ws]=='\t')) ws++;
-  ed_insert_text("\n", 1);
-  if (ws > 0) ed_insert_text(ed.buf + ls, ws);
-  ed.cur += ws;
-}
-static void ed_backspace(void) {
-  size_t a, b; ed_sel_range(&a, &b);
-  if (a != b) { ed_delete_range(a, b); ed.cur = a; return; }
-  if (ed.cur == 0) return;
-  size_t prev = cw_back(ed.buf, ed.cur);
-  ed_delete_range(prev, ed.cur); ed.cur = prev;
-}
-static void ed_delete(void) {
-  size_t a, b; ed_sel_range(&a, &b);
-  if (a != b) { ed_delete_range(a, b); ed.cur = a; return; }
-  if (ed.cur >= ed.len) return;
-  size_t nxt = cw_fwd(ed.buf, ed.len, ed.cur);
-  ed_delete_range(ed.cur, nxt);
-}
-
-/* movement; shift selects */
-static void ed_move(size_t target, bool shift) {
-  if (shift && ed.sel == SIZE_MAX) ed.sel = ed.cur;
-  ed.cur = target;
-  if (!shift) ed.sel = SIZE_MAX;
-  last_blink = GetTime();
-}
-static void ed_move_left(bool shift) {
-  size_t t = ed.cur == 0 ? 0 : cw_back(ed.buf, ed.cur);
-  ed_move(t, shift);
-}
-static void ed_move_right(bool shift) {
-  size_t t = ed.cur >= ed.len ? ed.len : cw_fwd(ed.buf, ed.len, ed.cur);
-  ed_move(t, shift);
-}
-static void ed_move_up_down(int dir, bool shift) {
-  int li = ed_cur_line();
-  int col = ed_col_of(ed.cur);
-  int nli = li + dir;
-  if (nli < 0) nli = 0; else if (nli >= ed_lines()) nli = ed_lines()-1;
-  size_t ls = ed_line_start(nli);
-  size_t ll = ed_line_len(nli);
-  size_t t = ls + (size_t)(col < (int)ll ? col : ll);
-  ed_move(t, shift);
-}
-static void ed_move_home(bool shift) {
-  int li = ed_cur_line();
-  /* home: to start of indentation, else line start */
-  size_t ls = ed_line_start(li);
-  size_t p = ls; while (p < ed.cur && (ed.buf[p]==' '||ed.buf[p]=='\t')) p++;
-  size_t t = (p < ed.cur) ? p : ls;
-  ed_move(t, shift);
-}
-static void ed_move_end(bool shift) {
-  int li = ed_cur_line();
-  size_t t = ed_line_start(li) + ed_line_len(li);
-  ed_move(t, shift);
-}
-static void ed_move_page(int dir, bool shift) {
-  for (int i = 0; i < 12; i++) ed_move_up_down(dir, shift);
-}
-
-/* click position (pixel) -> byte offset. Rounds to the nearest character cell
- * so the caret lands exactly on the column the click actually targets. */
-static size_t ed_click_to_off(float mx, float my, int area_left, int area_top) {
-  int lines = ed_lines();
-  int li = ed.view_line + (int)((my - area_top) / line_h);
-  if (li < 0) li = 0; else if (li >= lines) li = lines-1;
-  int col0 = ed.view_col;
-  size_t ls = ed_line_start(li);
-  size_t ll = ed_line_len(li);
-  float x = mx - area_left;
-  long target_col = col0 + (long)(x / char_w + 0.5f);   /* nearest cell */
-  if (target_col < 0) target_col = 0;
-  if (target_col > (long)ll) target_col = ll;
-  return ls + (size_t)target_col;
-}
+/* reset caret blink phase on any editor change/move */
+static void reset_blink(void) { last_blink = GetTime(); }
 
 /* highest-priority held key among the auto-repeat set, or 0 */
 static int ed_held_repeat_key(void) {
@@ -532,7 +295,7 @@ static void ed_handle_key(int k, bool shift, bool ctrl) {
     }
   } else {
     switch (k) {
-      case KEY_A: { ed.sel = 0; ed.cur = ed.len; } break;
+      case KEY_A: ed_select_all(); break;
       case KEY_X: case KEY_C: {
         const char *s = ed_get_selected();
         if (s) {
@@ -724,6 +487,28 @@ static void stop_sketch(void) {
   sk.pid = 0;
 }
 
+/* run a shell command and split its stdout on whitespace into tok[], returning
+ * the token count (used to fetch compiler flags like pkg-config's). */
+static int flags_tokens(const char *cmd, char tok[][256]) {
+  FILE *fp = popen(cmd, "r");
+  if (!fp) return 0;
+  char buf[4096];
+  size_t len = fread(buf, 1, sizeof buf - 1, fp);
+  buf[len] = 0;
+  pclose(fp);
+  int n = 0;
+  char *p = buf;
+  while (*p && n < 16) {
+    while (*p == ' ' || *p == '\t' || *p == '\n') p++;
+    if (!*p) break;
+    char *s = p;
+    while (*p && *p != ' ' && *p != '\t' && *p != '\n') p++;
+    int l = (int)(p - s);
+    memcpy(tok[n], s, (size_t)l); tok[n][l] = 0; n++;
+  }
+  return n;
+}
+
 /* read all lines written into *p line-by-line, split by source file marker.
  * This is a helper the caller doesn't strictly need but is kept for clarity. */
 static int build_pipeline(void) {
@@ -775,9 +560,21 @@ static int build_pipeline(void) {
     char O[] = "-O2"; char Idir[PATH_MAX]; char *Idir_arg = malloc(4 + strlen(script_dir));
     sprintf(Idir_arg, "-I%s", script_dir);
     char out[PATH_MAX]; snprintf(out, sizeof out, "-o%s", sketch_out);
-    char *argv[] = { gcc, O, Idir_arg, sketch_c, out,
-                     "-lraylib", "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11", NULL };
+    /* capture the FreeType cflags/libs from pkg-config (needed because the
+     * sketch runtime loads Terminus's embedded bitmap strikes via FreeType) */
+    static char ft_cf[8][256]; int n_ft_cf = flags_tokens("pkg-config --cflags freetype2 2>/dev/null", ft_cf);
+    static char ft_lib[4][256]; int n_ft_lib = flags_tokens("pkg-config --libs freetype2 2>/dev/null", ft_lib);
+    static const char *fixed[] = { "-lraylib", "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11", NULL };
+    int nfixed = (int)(sizeof fixed / sizeof fixed[0]) - 1;
+    char **argv = calloc((size_t)(7 + n_ft_cf + nfixed + n_ft_lib + 1), sizeof(char *));
+    int ai = 0;
+    argv[ai++] = gcc; argv[ai++] = O; argv[ai++] = Idir_arg; argv[ai++] = sketch_c; argv[ai++] = out;
+    for (int i = 0; i < n_ft_cf; i++) argv[ai++] = ft_cf[i];
+    for (int i = 0; i < nfixed; i++) argv[ai++] = (char*)fixed[i];
+    for (int i = 0; i < n_ft_lib; i++) argv[ai++] = ft_lib[i];
+    argv[ai] = NULL;
     int rc = spawn_capture(argv, NULL, &gerr);
+    free(argv);
     free(Idir_arg);
     if (rc != 0) {
       /* gcc prints a mountain of diagnostics; dedupe to first error per
@@ -929,6 +726,7 @@ static int have_native_dialogs(void) {
 }
 
 static int native_dialogs = 1, dialogs_checked = 0;
+static int show_about = 0;
 
 static void cmd_open(void) {
   if (!native_dialogs) {
@@ -1014,6 +812,8 @@ static void frame(void) {
   if (ButtonLike("Save", bx, 2, 44, &dummy)) cmd_save();
   bx += 50;
   if (ButtonLike("SaveAs", bx, 2, 58, &dummy)) cmd_save_as();
+  bx += 64;
+  if (ButtonLike("About", bx, 2, 56, &dummy)) show_about = 1;
 
   /* status text right-aligned (with a permanent ALPHA release tag) */
   {
@@ -1031,6 +831,10 @@ static void frame(void) {
   }
 
   /* ---------------- splitter + console area ---------------- */
+  /* keep the console within sane bounds even if the window shrinks while the
+   * splitter is not being dragged */
+  if (console_frac < 60) console_frac = 60;
+  if (console_frac > h - 120) console_frac = (h - 120 > 60) ? h - 120 : 60;
   int split_y = h - console_frac;
   DrawLine(0, split_y, w, split_y, OL_EDGE);
   DrawLine(0, split_y+1, w, split_y+1, OL_SHADOW);   /* 1px shadow under the line */
@@ -1048,9 +852,13 @@ static void frame(void) {
   }
 
   /* ---------------- console ---------------- */
-  DrawRectangle(0, split_y+3, w, h - (split_y+3), OL_CON);
-  int con_top_area = split_y + 4;
+  const int con_head = 18;                       /* header strip height */
+  int con_top_area = split_y + 3 + con_head;
   int con_h = h - con_top_area;
+  /* header strip with a legible label */
+  DrawRectangle(0, split_y+3, w, con_head, OL_TB);
+  DrawLine(0, con_top_area-1, w, con_top_area-1, OL_EDGE);
+  DrawTextEx(font, "console", (Vector2){8, split_y+3+3}, fs, 0.0f, OL_DIM);
   if (con_h > 4) {
     /* count lines that fit */
     int vis = con_h / (int)line_h;
@@ -1086,8 +894,6 @@ static void frame(void) {
       }
     }
   }
-  DrawTextEx(font, "console", (Vector2){w-70, con_top_area+2}, fs-4, 1.0f, OL_FAINT);
-
   /* ---------------- editor ---------------- */
   int ed_top = tb;
   int ed_h = split_y - tb;
@@ -1120,6 +926,7 @@ static void frame(void) {
   for (int i = ed.view_line; i < lines_n && i - ed.view_line < vis_lines; i++) { int l = (int)ed_line_len(i); if (l > maxlen) maxlen = l; }
 
   /* ---------- keyboard editing (with auto-repeat) ---------- */
+  if (!show_about) {
   {
     bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
     bool ctrl  = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
@@ -1127,6 +934,15 @@ static void frame(void) {
     /* fresh key presses (single events) */
     int k;
     while ((k = GetKeyPressed()) != 0) {
+      if (ctrl) {
+        if (ctrl && shift) {
+          if (k == KEY_UP)        { ed_move_line(-1); continue; }
+          if (k == KEY_DOWN)      { ed_move_line( 1); continue; }
+        }
+        if (k == KEY_R) { if (state == ST_IDLE) start_run(); continue; }
+        if (k == KEY_S) { stop_sketch(); continue; }
+        if (k == KEY_T) { ed_pretty_format(); continue; }
+      }
       ed_handle_key(k, shift, ctrl);
       /* arm repeat timer for held navigation/editing keys */
       key_repeat_key = ctrl ? 0 : ed_held_repeat_key();
@@ -1149,6 +965,9 @@ static void frame(void) {
         key_repeat_timer = GetTime() + KEYREP_RATE;
       }
     } else key_repeat_key = 0;
+  }
+  } else if (IsKeyPressed(KEY_ESCAPE)) {
+    show_about = 0;
   }
 
   /* horizontal scrolling with shift+wheel? use plain wheel over editor for
@@ -1280,18 +1099,41 @@ static void frame(void) {
   }
 
   /* mouse interaction with editor (set cursor / selection) */
+  if (!show_about) {
   if (IsMouseButtonPressed(2) && GetMouseY() > ed_top && GetMouseY() < con_top_area && GetMouseX() > area_l) {
     /* Linux/Unix middle-click paste (same content as Ctrl+V) */
     ed.cur = ed_click_to_off(GetMouseX(), GetMouseY(), area_l, ed_top);
-    ed.sel = SIZE_MAX;
+    ed.sel = SIZE_MAX; ed.goal_col = -1;
     const char *cb = GetClipboardText();
     if (cb) { size_t n = strlen(cb); if (n) ed_insert_text(cb, n); }
   } else if (IsMouseButtonPressed(0) && GetMouseY() > ed_top && GetMouseY() < con_top_area && GetMouseX() > area_l) {
     ed.cur = ed_click_to_off(GetMouseX(), GetMouseY(), area_l, ed_top);
-    ed.sel = SIZE_MAX; last_blink = GetTime();
+    ed.sel = SIZE_MAX; ed.goal_col = -1; last_blink = GetTime();
   } else if (IsMouseButtonDown(0) && GetMouseY() > ed_top && GetMouseY() < con_top_area && GetMouseX() > area_l) {
     if (ed.sel == SIZE_MAX) ed.sel = ed.cur;
     ed.cur = ed_click_to_off(GetMouseX(), GetMouseY(), area_l, ed_top);
+    ed.goal_col = -1;
+  }
+  }
+
+  /* ---------------- About modal (drawn last so it overlays everything) ---- */
+  if (show_about) {
+    DrawRectangle(0, 0, w, h, (Color){0, 0, 0, 140});
+    int bw = 440, bh = 168;
+    int bx = (w - bw) / 2, by = (h - bh) / 2;
+    DrawRectangleRec((Rectangle){ bx, by, bw, bh }, OL_TB);
+    DrawRectangleLinesEx((Rectangle){ bx, by, bw, bh }, 1, OL_EDGE);
+    DrawRectangleLinesEx((Rectangle){ bx+1, by+1, bw-2, bh-2 }, 1, OL_SHADOW);
+    int ty = by + 22;
+    DrawTextEx(font, "pdeide — Processing-style IDE", (Vector2){ bx + 18, (float)ty }, fs, 0.0f, OL_TEXT);
+    ty += 28;
+    DrawTextEx(font, "Author: Kof, 2026", (Vector2){ bx + 18, (float)ty }, fs, 0.0f, OL_DIM);
+    ty += 24;
+    DrawTextEx(font, "Community software — provided as-is,", (Vector2){ bx + 18, (float)ty }, fs, 0.0f, OL_FAINT);
+    ty += 20;
+    DrawTextEx(font, "with no warranty. Happy hacking!", (Vector2){ bx + 18, (float)ty }, fs, 0.0f, OL_FAINT);
+    static int okdummy;
+    if (ButtonLike("OK", bx + bw - 80, by + bh - 30, 60, &okdummy)) show_about = 0;
   }
 }
 
@@ -1434,7 +1276,10 @@ int main(int argc, char **argv) {
 
   srand((unsigned)time(NULL));
 
-  InitWindow(800, 520, "pdeide — Processing sketch editor");
+  SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+  SetWindowMinSize(480, 360);
+  InitWindow(1000, 640, "pdeide — Processing sketch editor");
+  SetExitKey(KEY_NULL);   /* ESC is used to close the About modal, not to exit */
   SetTargetFPS(60);
 
   char fontpath[PATH_MAX]; snprintf(fontpath, sizeof fontpath, "%s/terminus.ttf", script_dir);
@@ -1449,6 +1294,8 @@ int main(int argc, char **argv) {
   line_h = (float)(int)line_h;
 
   ed_init();
+  ed_set_metrics(char_w, line_h);
+  ed_on_change = reset_blink;
 
   /* initial sketch: argv[1] or sketch.pde if present in script dir */
   if (argc > 1 && argv[1][0]) {

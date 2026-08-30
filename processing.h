@@ -15,9 +15,15 @@
 #include <string.h>
 #include <math.h>
 #include <sys/time.h>
+#include <unistd.h>
 // NOTE: <time.h> intentionally not included: sketches often declare a global
 // named "time", which would collide with time(). <sys/time.h> provides
 // gettimeofday() without declaring any symbol named "time".
+
+// FreeType is used to load Terminus's EMBEDDED bitmap strikes so the running
+// sketch renders its default font exactly like the pixel-crisp editor font.
+#include <ft2build.h>
+#include FT_FREETYPE_H
 
 #ifndef PI
 #define PI 3.14159265358979323846f
@@ -100,7 +106,7 @@ typedef Font PFont;
 typedef RenderTexture2D PGraphics;
 
 static PFont _currentFont;
-static float _textSizeState = 14.0f;
+static float _textSizeState = 12.0f;
 static float _textSpacing = 1.0f;
 static float _textLeading = 0.0f;
 static Color _fillColor = { 255, 255, 255, 255 };
@@ -151,7 +157,7 @@ static int _shapeModeClose = 0;
 static int _shapeMode = POLYGON;
 
 static Font main_font;
-static float current_text_size = 14.0f; 
+static float current_text_size = 12.0f; 
 
 static char _nfBuffers[4][64];
 static int _nfBufferIndex = 0;
@@ -600,16 +606,124 @@ static inline void _pde_print_vfmt(const char *format, ...) {
 
 ///////////////////////////////////////////////////////////////////////////////////////////
 
+/* Load a font from its EMBEDDED bitmap strikes (the authentic hand-drawn pixel
+ * glyphs) via FreeType, ports identical to the IDE's font renderer so the
+ * running sketch's text matches the editor. Renders monospace glyphs as crisp
+ * 1-bit pixels. Falls back to the default font when no strike matches.
+ * `path` is tried first; if unreadable, the absolute IDE path is used, then
+ * raylib's default font. */
+static inline Font load_pixel_font(const char *path, int px) {
+  Font f = {0};
+  const char *candidates[] = { path, "/usr/share/fonts/TTF/terminus.ttf", NULL };
+  FILE *fp = NULL;
+  for (int ci = 0; ci < 2 && !fp; ci++) {
+    if (!candidates[ci] || !candidates[ci][0]) continue;
+    FILE *t = fopen(candidates[ci], "rb");
+    if (t) { fp = t; break; }
+  }
+  /* also try the absolute IDE location if the relative path was a dead end */
+  if (!fp) {
+    const char *abs = "/home/kof/src/RaylibProcessing/terminus.ttf";
+    if (access(abs, R_OK) == 0) fp = fopen(abs, "rb");
+  }
+  if (!fp) return GetFontDefault();
+  fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
+  unsigned char *data = malloc((size_t)sz);
+  if (!data) { fclose(fp); return GetFontDefault(); }
+  size_t got = fread(data, 1, (size_t)sz, fp); fclose(fp);
+  if (got != (size_t)sz) { free(data); return GetFontDefault(); }
+
+  FT_Library lib = NULL;
+  FT_Face face = NULL;
+  if (FT_Init_FreeType(&lib) != 0) { free(data); return GetFontDefault(); }
+  if (FT_New_Memory_Face(lib, data, (FT_Long)sz, 0, &face) != 0) {
+    FT_Done_FreeType(lib); free(data); return GetFontDefault();
+  }
+
+  /* select the embedded strike whose ppem matches px; else first reaching px */
+  int chosen = -1;
+  for (int i = 0; i < face->num_fixed_sizes; i++) {
+    FT_Bitmap_Size bs = face->available_sizes[i];
+    int ppem = (int)(((bs.y_ppem > 0 ? bs.y_ppem : bs.height) + 32) / 64);
+    if (ppem == px) { chosen = i; break; }
+    if (chosen < 0 && ppem > px) chosen = i;
+  }
+  if (chosen < 0 || FT_Select_Size(face, chosen) != 0) {
+    FT_Done_FreeType(lib); free(data); return GetFontDefault();
+  }
+
+  int ascent = (int)(face->size->metrics.ascender / 64);
+  int cps[] = {
+    32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,
+    58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,
+    91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,
+    117,118,119,120,121,122,123,124,125,126 };
+  int ncp = (int)(sizeof(cps)/sizeof(cps[0]));
+  GlyphInfo *glyphs = calloc((size_t)ncp, sizeof(GlyphInfo));
+  Rectangle *recs = NULL;
+  int gcount = 0;
+
+  for (int i = 0; i < ncp; i++) {
+    int cp = cps[i];
+    FT_UInt gid = FT_Get_Char_Index(face, (FT_ULong)cp);
+    if (gid == 0) continue;
+    if (FT_Load_Glyph(face, gid, FT_LOAD_RENDER) != 0) continue;
+    FT_Bitmap *b = &face->glyph->bitmap;
+    int bw = (int)b->width, bh = (int)b->rows;
+    int stride = (int)b->pitch;
+    if (stride < 0) stride = -stride;
+
+    if (cp == 32 && (bw == 0 || bh == 0)) {
+      int a = (int)(face->glyph->advance.x/64);
+      Image sp = { .data = calloc((size_t)(a>0?a:px)* (size_t)px, 1),
+                   .width = a>0?a:px, .height = px, .mipmaps = 1,
+                   .format = PIXELFORMAT_UNCOMPRESSED_GRAYSCALE };
+      glyphs[gcount].value = cp; glyphs[gcount].advanceX = a>0?a:px;
+      glyphs[gcount].offsetX = 0; glyphs[gcount].offsetY = 0; glyphs[gcount].image = sp;
+      gcount++; continue;
+    }
+    if (bw <= 0 || bh <= 0) continue;
+
+    unsigned char *pxd = calloc((size_t)bw*(size_t)bh, 1);
+    const unsigned char *src = b->buffer;
+    for (int y = 0; y < bh; y++) {
+      const unsigned char *row = src + (long)y*stride;
+      for (int x = 0; x < bw; x++) {
+        pxd[(size_t)y*bw + (size_t)x] = (row[x>>3] >> (7-(x&7))) & 1 ? 255 : 0;
+      }
+    }
+    Image gi = { .data = pxd, .width = bw, .height = bh, .mipmaps = 1,
+                 .format = PIXELFORMAT_UNCOMPRESSED_GRAYSCALE };
+    glyphs[gcount].value = cp;
+    glyphs[gcount].offsetX = face->glyph->bitmap_left;
+    glyphs[gcount].offsetY = ascent - face->glyph->bitmap_top;
+    glyphs[gcount].advanceX = (int)(face->glyph->advance.x/64);
+    glyphs[gcount].image = gi;
+    gcount++;
+  }
+
+  FT_Done_FreeType(lib);
+  free(data);
+
+  if (gcount <= 0) { free(glyphs); return GetFontDefault(); }
+
+  Image atlas = GenImageFontAtlas(glyphs, &recs, gcount, px, 0, 0);
+  if (atlas.data == NULL) { for (int i=0;i<gcount;i++) UnloadImage(glyphs[i].image); free(glyphs); return GetFontDefault(); }
+
+  f.baseSize = px;
+  f.glyphCount = gcount;
+  f.glyphPadding = 0;
+  f.texture = LoadTextureFromImage(atlas);
+  f.recs = recs;
+  f.glyphs = glyphs;
+  UnloadImage(atlas);
+  return f;
+}
+
 static inline void load_default_font(void) {
-  main_font = LoadFontEx("terminus.ttf", current_text_size, NULL, 0);
+  main_font = load_pixel_font("terminus.ttf", (int)current_text_size);
 
-  if (main_font.texture.id <= 0) {
-    main_font = LoadFontEx("/home/kof/src/RaylibProcessing/terminus.ttf", current_text_size, NULL, 0);
-  }
-
-  if (main_font.texture.id <= 0) {
-    main_font = GetFontDefault();
-  }
+  if (main_font.texture.id <= 0) main_font = GetFontDefault();
 
   _currentFont = main_font;
   SetTextureFilter(main_font.texture, TEXTURE_FILTER_POINT);

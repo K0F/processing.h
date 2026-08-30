@@ -1,11 +1,20 @@
+# build artifacts
 sketch.c
 sketch
-render
+pdeide
 pde2c
-sketch.c
-sketch
-render
-pde2c
+pdecc
 pp2c
+render
+tests/test_editor
+*.o
+*.gch
+
+# output / scratch
 corpus-results.txt
-processing.h.gch
+*.png
+session-*.md
+
+# build trees (static deps + release)
+/build/
+/dist/
