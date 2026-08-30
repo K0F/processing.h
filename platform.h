@@ -11,8 +11,12 @@
 #define PDEIDE_PLATFORM_H
 
 #ifdef _WIN32
-#include <windows.h>
-typedef DWORD plat_pid_t;
+/* Do NOT include <windows.h> here: doing so leaks the Win32 SDK (winuser.h/
+ * windef.h) into every TU that includes platform.h, which collides with
+ * raylib identifiers (DrawTextEx, CloseWindow, Rectangle). The concrete
+ * DWORD is all consumers need; platform.c includes the real <windows.h>.
+ * On Win64 DWORD is an unsigned 32-bit type == unsigned long. */
+typedef unsigned long plat_pid_t;
 #else
 typedef long plat_pid_t;
 #endif

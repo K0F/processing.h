@@ -17,6 +17,8 @@
 /* ------------------------------------------------------------------ */
 /* Windows (best-effort)                                               */
 /* ------------------------------------------------------------------ */
+#include <windows.h>
+#include <sys/stat.h>        /* _S_IREAD/_S_IWRITE/_S_IEXEC for _chmod */
 #include <io.h>
 #include <fcntl.h>
 #include <process.h>

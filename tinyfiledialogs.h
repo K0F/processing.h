@@ -49,6 +49,8 @@ misrepresented as being the original software.
 #ifndef TINYFILEDIALOGS_H
 #define TINYFILEDIALOGS_H
 
+#include <stddef.h>   /* wchar_t, used by the UTF-16/wchar_t entry points */
+
 #ifdef	__cplusplus
 /* if tinydialogs.c is compiled as C++ code rather than C code, you may need to comment this out
 				and the corresponding closing bracket near the end of this file. */
