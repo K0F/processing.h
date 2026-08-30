@@ -126,6 +126,42 @@ the "Backlog" block below.
 - [ ] **Promote stubs to real implementations** once a sketch actually needs each body.
 - [ ] **Verify remaining constants:** `hue`/`saturation`/`brightness` output ranges and `beginShape` `OPEN`/`CLOSE` enum values vs real Processing ints (`CLOSE=145`).
 
+## Phase 10: Real implementations of the Phase-9 stubs (difficulty [1..5] per step)
+Strategy: do the pure libraries first (headless unit-testable), wire the
+method-call forms, then add renderer state in small layers, then the
+shape/path subsystem. Each line below lands as its own commit.
+
+### Tier A - Pure functions (unit tests via ctest, no GPU)
+- [ ] delay(), cursor()/noCursor() real (CPU-delay; raylib Show/HideMouse + SetMouseCursor)  [1]
+- [ ] min()/max() 3-arg + int[]/float[] array forms  [1]
+- [ ] nf()/nfc() array forms; nfc() keeps 2 decimals  [2]
+- [ ] byte()/boolean() real clamp/bool conversions; char() kept as C cast  [1]
+- [ ] binary()/unbinary() real bit-string conversion  [1]
+- [ ] hex() real (drop '#' prefix) + digits arity  [2]
+- [ ] PMatrix 2D API + printMatrix  [2]
+- [ ] trim(String[]) real (strip + realloc arrays)  [1]
+- [ ] String instance methods refactored to _pde_str_* (indexOf, substring, toLowerCase/UpperCase, replace, equals)  [3]
+- [ ] PVector instance + static methods (set/mag/add/sub/mult/div/dist/dot/cross/normalize/limit/heading/rotate/lerp/angleBetween/array/fromAngle + random2D/random3D)  [3]
+- [ ] match()/matchAll() - needs a minimal regex engine (vendored or ~300-line DFA)  [4]
+
+### Tier B - pde2c method-call rewiring
+- [ ] Route String receivers to _pde_str_*; expose PVector statics as accessors  [2]
+
+### Tier C - Renderer state, small increment each
+- [ ] pushStyle()/popStyle() (save/restore existing fill/stroke/tint id + widths)  [1]
+- [ ] fullScreen() (ToggleFullscreen + rederived layout, 0/1-arg forms)  [2]
+- [ ] colorMode() HSB real: store colors in HSB bucket, keep hue/sat/brightness outputs consistent  [2]
+- [ ] imageMode() + image blend() (compose via draw-into-texture with raylib blend modes)  [3]
+- [ ] texture()/textureWrap() into the existing 3D path (rlSetTextureWrap + upload)  [4]
+- [ ] perspective()/frustum() + beginCamera()/endCamera() (custom projection matrices)  [4]
+- [ ] lighting/material pipeline: ambient/directional/point/spot light + lightSpecular/lightFalloff + ambient/emissive/specular/shininess  [5]
+
+### Tier D - Shape/path subsystem
+- [ ] curveVertex() via Catmull-Rom in a dedicated curve buffer (ignores prior vertex(), matches Processing)  [2]
+- [ ] quadraticVertex() chained conic segments; bezierVertex() gets C1-continuity hint  [2]
+- [ ] beginContour()/endContour() - append sub-polygons into the ear-clip tessellator  [3]
+- [ ] loadShape()/createShape()/PShape - parser + shape cache + draw (needs file IO)  [5]
+
 ## Next Steps (Unfinished)
 - [ ] **Inheritance & generics / type parameters** (`extends`, `<T>`).
 - [ ] **Exception handling:** `try/catch`.
