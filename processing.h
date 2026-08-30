@@ -25,6 +25,13 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
+// Embedded terminus font for fully self-contained exported binaries (no font
+// file needed on disk). Included only when explicitly requested via
+// PDEIDE_EMBEDDED_FONT; the live IDE build reads the .ttf from disk instead.
+#ifdef PDEIDE_EMBEDDED_FONT
+#include "terminus_ttf.h"
+#endif
+
 #ifndef PI
 #define PI 3.14159265358979323846f
 #endif
@@ -614,30 +621,55 @@ static inline void _pde_print_vfmt(const char *format, ...) {
  * raylib's default font. */
 static inline Font load_pixel_font(const char *path, int px) {
   Font f = {0};
-  const char *candidates[] = { path, "/usr/share/fonts/TTF/terminus.ttf", NULL };
-  FILE *fp = NULL;
-  for (int ci = 0; ci < 2 && !fp; ci++) {
-    if (!candidates[ci] || !candidates[ci][0]) continue;
-    FILE *t = fopen(candidates[ci], "rb");
-    if (t) { fp = t; break; }
+  unsigned char *data = NULL;
+  unsigned long sz = 0;
+  int free_data = 0;
+
+  /* Author-supplied path (or the stock terminus path) is tried first so custom
+   * fonts keep working. If nothing reads from disk we fall back to the
+   * embedded terminus bitmap-strike font below, which lets fully
+   * self-contained exported binaries render text with no font file present. */
+  {
+    const char *candidates[] = { path, "/usr/share/fonts/TTF/terminus.ttf", NULL };
+    FILE *fp = NULL;
+    for (int ci = 0; ci < 2 && !fp; ci++) {
+      if (!candidates[ci] || !candidates[ci][0]) continue;
+      FILE *t = fopen(candidates[ci], "rb");
+      if (t) { fp = t; break; }
+    }
+    /* also try the absolute IDE location if the relative path was a dead end */
+    if (!fp) {
+      const char *abs = "/home/kof/src/RaylibProcessing/terminus.ttf";
+      if (access(abs, R_OK) == 0) fp = fopen(abs, "rb");
+    }
+    if (fp) {
+      fseek(fp, 0, SEEK_END); long t = ftell(fp); fseek(fp, 0, SEEK_SET);
+      if (t > 0) {
+        data = malloc((size_t)t);
+        if (data) {
+          size_t got = fread(data, 1, (size_t)t, fp);
+          if (got == (size_t)t) { sz = (unsigned long)t; free_data = 1; }
+          else { free(data); data = NULL; }
+        }
+      }
+      fclose(fp);
+    }
   }
-  /* also try the absolute IDE location if the relative path was a dead end */
-  if (!fp) {
-    const char *abs = "/home/kof/src/RaylibProcessing/terminus.ttf";
-    if (access(abs, R_OK) == 0) fp = fopen(abs, "rb");
+
+  if (!data) {
+#ifdef PDEIDE_EMBEDDED_FONT
+    data = (unsigned char *)terminus_ttf;
+    sz = terminus_ttf_len;
+#endif
   }
-  if (!fp) return GetFontDefault();
-  fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
-  unsigned char *data = malloc((size_t)sz);
-  if (!data) { fclose(fp); return GetFontDefault(); }
-  size_t got = fread(data, 1, (size_t)sz, fp); fclose(fp);
-  if (got != (size_t)sz) { free(data); return GetFontDefault(); }
+
+  if (!data) return GetFontDefault();
 
   FT_Library lib = NULL;
   FT_Face face = NULL;
-  if (FT_Init_FreeType(&lib) != 0) { free(data); return GetFontDefault(); }
+  if (FT_Init_FreeType(&lib) != 0) { if (free_data) free(data); return GetFontDefault(); }
   if (FT_New_Memory_Face(lib, data, (FT_Long)sz, 0, &face) != 0) {
-    FT_Done_FreeType(lib); free(data); return GetFontDefault();
+    FT_Done_FreeType(lib); if (free_data) free(data); return GetFontDefault();
   }
 
   /* select the embedded strike whose ppem matches px; else first reaching px */
@@ -649,7 +681,7 @@ static inline Font load_pixel_font(const char *path, int px) {
     if (chosen < 0 && ppem > px) chosen = i;
   }
   if (chosen < 0 || FT_Select_Size(face, chosen) != 0) {
-    FT_Done_FreeType(lib); free(data); return GetFontDefault();
+    FT_Done_FreeType(lib); if (free_data) free(data); return GetFontDefault();
   }
 
   int ascent = (int)(face->size->metrics.ascender / 64);
@@ -703,7 +735,7 @@ static inline Font load_pixel_font(const char *path, int px) {
   }
 
   FT_Done_FreeType(lib);
-  free(data);
+  if (free_data) free(data);
 
   if (gcount <= 0) { free(glyphs); return GetFontDefault(); }
 

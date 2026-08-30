@@ -683,6 +683,8 @@ static void save_file(const char *path);
 static void cmd_open(void);
 static void cmd_save(void);
 static void cmd_save_as(void);
+static void cmd_export(void);
+static void export_static(const char *dest_path);
 static int ButtonLike(const char *label, int x, int y, int colw, int *yout);
 
 static void load_file(const char *path) {
@@ -754,6 +756,140 @@ static void cmd_save_as(void) {
   if (p) save_file(p);
 }
 
+/* Compile the current sketch into a single statically-linked, self-contained
+ * executable. The sketch runtime links against the vendored static raylib +
+ * freetype archives and embeds the terminus font, so the produced binary only
+ * depends on the host's base system libraries (libc/libm/libGL/libX11) and can
+ * be copied to an identical distro and run without any extra files. */
+static void export_static(const char *dest_path) {
+  /* 1. write the source .pde with a //@file marker (same as build_pipeline) */
+  const char *base = ed.path[0] ? ed.path : "sketch.pde";
+  const char *slash = strrchr(base, '/');
+  if (slash) base = slash + 1;
+  if (strlen(base) < 4) base = "sketch.pde";
+  char pde_path[PATH_MAX]; snprintf(pde_path, sizeof pde_path, "%s/%s", build_dir, base);
+  FILE *fp = fopen(pde_path, "wb");
+  if (!fp) { con_add("export: cannot write %s (%s)", CON_ERR, pde_path, strerror(errno)); return; }
+  fprintf(fp, "//@file %s\n", base);
+  fwrite(ed.buf, 1, ed.len, fp);
+  fclose(fp);
+
+  ed_clear_errors();
+  con_clear();
+  con_add("== exporting static binary... ==", CON_STATUS);
+
+  /* 2. transpile */
+  char pde2c[PATH_MAX]; snprintf(pde2c, sizeof pde2c, "%s/pde2c", script_dir);
+  char sketch_c[PATH_MAX]; snprintf(sketch_c, sizeof sketch_c, "%s/%s.c", build_dir, base);
+  char *cap = NULL;
+  {
+    char *argv[] = { pde2c, pde_path, NULL };
+    int rc = spawn_capture(argv, sketch_c, &cap);
+    if (rc != 0) {
+      if (rc == 127) con_add("export: pde2c not found", CON_ERR);
+      handle_diagnostics(cap ? cap : "");
+      free(cap);
+      con_add("EXPORT FAILED (transpile)", CON_ERR);
+      return;
+    }
+  }
+  free(cap);
+
+  /* 3. compile sketch to an object, embedding the font + static headers */
+  char obj[PATH_MAX]; snprintf(obj, sizeof obj, "%s/%s.o", build_dir, base);
+  char *cerr = NULL;
+  {
+    char Idir[PATH_MAX]; snprintf(Idir, sizeof Idir, "-I%s", script_dir);
+    char Iray[PATH_MAX]; snprintf(Iray, sizeof Iray, "-I%s/third_party/raylib/src", script_dir);
+    char Ift[PATH_MAX];  snprintf(Ift,  sizeof Ift,  "-I%s/third_party/freetype/include", script_dir);
+    char Iftb[PATH_MAX]; snprintf(Iftb, sizeof Iftb, "-I%s/build/static/freetype/include", script_dir);
+    char *argv[] = {
+      "gcc", "-c", sketch_c, "-o", obj, "-O2", "-DPDEIDE_EMBEDDED_FONT",
+      Idir, Iray, Ift, Iftb, NULL
+    };
+    int rc = spawn_capture(argv, NULL, &cerr);
+    if (rc != 0) {
+      handle_diagnostics(cerr ? cerr : "");
+      free(cerr);
+      con_add("EXPORT FAILED (compile)", CON_ERR);
+      return;
+    }
+    free(cerr);
+  }
+
+  /* 4. link statically against the vendored archives */
+  char *lerr = NULL;
+  {
+    char Lray[PATH_MAX]; snprintf(Lray, sizeof Lray, "%s/build/static/raylib/raylib/libraylib.a", script_dir);
+    char Lft[PATH_MAX];  snprintf(Lft,  sizeof Lft,  "%s/build/static/freetype/libfreetype.a", script_dir);
+    char out[PATH_MAX];  snprintf(out,   sizeof out,  "-o%s", dest_path);
+    char *argv[] = {
+      "gcc", obj, out, Lray, Lft,
+      "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11", NULL
+    };
+    int rc = spawn_capture(argv, NULL, &lerr);
+    if (rc != 0) {
+      char *dup = str_dup(lerr ? lerr : "");
+      char *tok = strtok(dup, "\n");
+      int shown = 0;
+      while (tok) {
+        long ln; const char *kind, *msg;
+        if (parse_diag(tok, &ln, &kind, &msg) && strcmp(kind, "error") == 0) {
+          if (shown < 20) con_add("L%ld: %s", CON_ERR, ln, msg);
+          shown++;
+        } else if (tok[0]) {
+          if (shown < 20) con_add_full(tok, CON_ERR);
+          shown++;
+        }
+        tok = strtok(NULL, "\n");
+      }
+      free(dup);
+      free(lerr);
+      if (shown == 0) con_add("link failed with no diagnostics", CON_ERR);
+      con_add("EXPORT FAILED (link)", CON_ERR);
+      return;
+    }
+    free(lerr);
+  }
+
+  chmod(dest_path, 0755);
+  {   /* optional: strip to slim the binary */
+    char *argv[] = { "strip", (char*)dest_path, NULL };
+    char *serr = NULL;
+    spawn_capture(argv, NULL, &serr);
+    free(serr);
+  }
+  con_add("exported %s (static, self-contained)", CON_OK, dest_path);
+}
+
+/* Compile the current sketch into a single statically-linked, self-contained
+ * executable. The sketch runtime links against the vendored static raylib +
+ * freetype archives and embeds the terminus font, so the produced binary only
+ * depends on the host's base system libraries (libc/libm/libGL/libX11) and can
+ * be copied to an identical distro and run without any extra files. */
+static void cmd_export(void) {
+  if (ed.len == 0) { con_add("export: nothing to export", CON_ERR); return; }
+
+  char defpath[PATH_MAX];
+  {
+    const char *base = ed.path[0] ? ed.path : "sketch.pde";
+    const char *sl = strrchr(base, '/'); if (sl) base = sl + 1;
+    char stem[PATH_MAX]; strncpy(stem, base, sizeof stem - 1); stem[sizeof stem - 1] = 0;
+    char *dot = strrchr(stem, '.');
+    if (dot && dot[1]) *dot = 0;
+    snprintf(defpath, sizeof defpath, "%s/%s.bin", script_dir, stem);
+  }
+
+  const char *p;
+  if (!native_dialogs) {
+    p = tinyfd_inputBox("Export binary", "Enter output path:", defpath);
+  } else {
+    const char *filt[] = { "*.bin", "*" };
+    p = tinyfd_saveFileDialog("Export binary", defpath, 1, filt, "Static self-contained binary");
+  }
+  if (p && p[0]) export_static(p);
+}
+
 static void load_file(const char *path);
 static void frame(void) {
   poll_sketch();
@@ -813,6 +949,8 @@ static void frame(void) {
   bx += 50;
   if (ButtonLike("SaveAs", bx, 2, 58, &dummy)) cmd_save_as();
   bx += 64;
+  if (ButtonLike("Export", bx, 2, 52, &dummy)) cmd_export();
+  bx += 58;
   if (ButtonLike("About", bx, 2, 56, &dummy)) show_about = 1;
 
   /* status text right-aligned (with a permanent ALPHA release tag) */
