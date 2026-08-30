@@ -13,7 +13,19 @@ tests/test_editor
 # output / scratch
 corpus-results.txt
 *.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
 session-*.md
+
+# but keep committed documentation screenshots
+!docs/
+!docs/*.png
+!docs/*.jpg
+!docs/*.jpeg
+!docs/*.gif
+!docs/*.webp
 
 # build trees (static deps + release)
 /build/
