@@ -148,6 +148,8 @@ static bool _loopRunning = true;
 static bool _redrawPending = true;   // draw() runs once even after setup noLoop()
 static bool _exitRequested = false;
 static bool _windowInit = false;
+static bool _canvasInited = false;   // canvas cleared once at startup; afterwards
+                                     // only an explicit background() clears it
 
 // event callbacks (weak: defined only when the sketch provides them) /////
 __attribute__((weak)) void keyPressed_event(void);
@@ -1026,9 +1028,16 @@ static inline void beginDraw(void) {
 
   BeginDrawing();
 
-  // all sketch drawing goes into the offscreen canvas
+  // all sketch drawing goes into the offscreen canvas. The canvas is wiped
+  // once at startup (to the current background color rather than leave
+  // uninitialized texture memory); after that it is cleared only when the
+  // sketch itself calls background() (Processing semantics: no background()
+  // call means no background drawn, prior frames persist).
   BeginTextureMode(_canvas);
-  ClearBackground(current_background_color);
+  if (!_canvasInited) {
+    ClearBackground(current_background_color);
+    _canvasInited = true;
+  }
 }
 
 static inline void endDraw(void) {

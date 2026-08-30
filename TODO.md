@@ -65,6 +65,7 @@ CMake build with vendored raylib + FreeType make it self-contained.
 - [x] **Member rewriting:** `this.`/bare-field refs -> `self->`, field initializers at ctor start, `new Name(...)` -> `Name_ctor(...)`, sketch-level `obj.method(...)` routed to the same functions.
 - [x] **ArrayList runtime:** `add/set/get/size/clear/remove`, `new ArrayList()`, type-erased copy-on-add, including the `(Type)list.get(i)` cast-get idiom.
 - [x] **Builtin `Object` value class** (empty struct + implicit ctor) so `new Object()` / `(Object) list.get(i)` compile.
+- [x] **No-background semantics:** canvas is wiped only once at startup; explicit `background()` calls clear it during the frame it is invoked, so sketches that never call `background()` keep prior frames (Processing-style trails) instead of a per-frame default-gray clear.
 - [x] **Generics-safe ArrayList:** `ArrayList<Type>` accepted in globals, function locals, params and class fields (type args dropped, still routed as `ArrayList`); member ops routed inside `setup()`/`draw()`/helpers too.
 
 ---
