@@ -762,8 +762,7 @@ static void scan_globals(Token *t, int n) {
       continue;
     }
     if (depth != 0) continue;
-    if (i == 0) continue;
-    if (t[i - 1].type == TOKEN_IDENTIFIER && strcmp(t[i - 1].text, "class") == 0) continue;
+    if (i > 0 && t[i - 1].type == TOKEN_IDENTIFIER && strcmp(t[i - 1].text, "class") == 0) continue;
     if (!is_plausible_type_token(tk)) continue;
     int j = i + 1;
     if (strcmp(tk.text, "ArrayList") == 0) j = skip_al_generics(t, n, i) + 1;
