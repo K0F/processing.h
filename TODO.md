@@ -64,6 +64,8 @@ CMake build with vendored raylib + FreeType make it self-contained.
 - [x] **Class translation:** `class Name { ... }` -> `typedef struct`, constructors emit `Name Name_ctor(args)`, methods emit `Name_meth(Name *self, ...)`.
 - [x] **Member rewriting:** `this.`/bare-field refs -> `self->`, field initializers at ctor start, `new Name(...)` -> `Name_ctor(...)`, sketch-level `obj.method(...)` routed to the same functions.
 - [x] **ArrayList runtime:** `add/set/get/size/clear/remove`, `new ArrayList()`, type-erased copy-on-add, including the `(Type)list.get(i)` cast-get idiom.
+- [x] **Builtin `Object` value class** (empty struct + implicit ctor) so `new Object()` / `(Object) list.get(i)` compile.
+- [x] **Generics-safe ArrayList:** `ArrayList<Type>` accepted in globals, function locals, params and class fields (type args dropped, still routed as `ArrayList`); member ops routed inside `setup()`/`draw()`/helpers too.
 
 ---
 
@@ -74,6 +76,7 @@ CMake build with vendored raylib + FreeType make it self-contained.
 - [x] **Pixel-crisp fonts:** authentic embedded bitmap strikes from `terminus.ttf` via FreeType (shared renderer in `processing.h` too).
 - [x] **Native dialogs:** open/save/export via bundled `tinyfiledialogs`, with a text-input fallback.
 - [x] **Static export:** one-click self-contained binary (statically linked raylib+freetype, embedded font).
+- [x] **Default window:** editor opens at 814x576 (layout derives from `GetScreenWidth/Height`, so it also resizes freely).
 
 ---
 

@@ -1408,7 +1408,7 @@ int main(int argc, char **argv) {
 
   SetConfigFlags(FLAG_WINDOW_RESIZABLE);
   SetWindowMinSize(480, 360);
-  InitWindow(1000, 640, "pdeide — Processing sketch editor");
+  InitWindow(814, 576, "pdeide — Processing sketch editor");
   SetExitKey(KEY_NULL);   /* ESC is used to close the About modal, not to exit */
   SetTargetFPS(60);
 

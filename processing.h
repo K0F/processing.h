@@ -1275,6 +1275,12 @@ static inline int _pde_arr_len(const void *ptr) {
     __typeof__(A[0])(*)[(sizeof(A) / sizeof((A)[0]))]: (int)(sizeof(A) / sizeof(*(A))), \
     default: _pde_arr_len((const void *)(A)))
 
+// java.lang.Object stand-in: an empty value class, so `new Object()` and
+// `(Object) list.get(i)` compile. sizeof(Object) is 1 (deviation from Java
+// identity semantics is inherent to the value-copy model).
+typedef struct _PdeObject { char _pde_pad; } Object;
+static inline Object Object_ctor(void) { return (Object){0}; }
+
 // ArrayList (in-memory subset). Each element is a malloc'ed copy of the
 // original value; `get` returns a void* to that copy so the Processing
 // cast idiom `(Type) list.get(i)` compiles to `*(Type *) _pde_ag_get(...)`.
