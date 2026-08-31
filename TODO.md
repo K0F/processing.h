@@ -140,12 +140,13 @@ shape/path subsystem. Each line below lands as its own commit.
 - [ ] hex() real (drop '#' prefix) + digits arity  [2]
 - [ ] PMatrix 2D API + printMatrix  [2]
 - [x] trim(String[]) real (strip + realloc arrays)  [1]
-- [ ] String instance methods refactored to _pde_str_* (indexOf, substring, toLowerCase/UpperCase, replace, equals)  [3]
+- [x] String instance methods refactored to _pde_str_* (indexOf, substring, toLowerCase/UpperCase, replace, equals)  [3]
+- [ ] String method overloads out of scope: indexOf(char)/indexOf(from,char), equalsIgnoreCase(), substring(begin) single-arg form  [2]
 - [ ] PVector instance + static methods (set/mag/add/sub/mult/div/dist/dot/cross/normalize/limit/heading/rotate/lerp/angleBetween/array/fromAngle + random2D/random3D)  [3]
 - [ ] match()/matchAll() - needs a minimal regex engine (vendored or ~300-line DFA)  [4]
 
 ### Tier B - pde2c method-call rewiring
-- [ ] Route String receivers to _pde_str_*; expose PVector statics as accessors  [2]
+- [x] Route String receivers to _pde_str_*; expose PVector statics as accessors  [2]
 
 ### Tier C - Renderer state, small increment each
 - [x] pushStyle()/popStyle() (save/restore existing fill/stroke/tint id + widths)  [1]
@@ -165,7 +166,7 @@ shape/path subsystem. Each line below lands as its own commit.
 ## Next Steps (Unfinished)
 - [ ] **Inheritance & generics / type parameters** (`extends`, `<T>`).
 - [ ] **Exception handling:** `try/catch`.
-- [ ] **String instance methods** (refactor to `_pde_str_*`: `indexOf`, `substring`, `toLowerCase`/`UpperCase`, `replace`, `equals`). (See Phase 10 Tier A, item 9).
+- [x] **String instance methods** (`indexOf`, `substring`, `toLowerCase`/`UpperCase`, `replace`, `equals`) + `trim()`/`length()`, string `+=`, and `==`/`!=` operators, refactored to `_pde_str_*`. (See Phase 10 Tier A, item 9). Remaining overloads (`indexOf(char)`, `equalsIgnoreCase`, single-arg `substring(begin)`) tracked separately.
 - [ ] **Path building:** `curveVertex` / `bezierVertex` inside arbitrary (non-`beginShape(CLOSE)`) paths.
 - [ ] **File IO:** `loadStrings` / `saveStrings` and text-file reading/writing.
 - [ ] **PGraphics receiver drawing:** `pg.stroke()`-style drawing calls on a `PGraphics` receiver (only `beginDraw/endDraw` are routed today).

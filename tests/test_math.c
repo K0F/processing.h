@@ -147,6 +147,63 @@ static void test_trim(void) {
   CHECK(strcmp(t[2], "three") == 0, "trim(String[2])=%s want three", t[2]);
 }
 
+static void test_str_methods(void) {
+  CHECK(_pde_str_len("Hello") == 5, "len='Hello'=%d want 5", _pde_str_len("Hello"));
+  CHECK(_pde_str_len("") == 0, "len=''=%d want 0", _pde_str_len(""));
+  CHECK(_pde_str_len(NULL) == 0, "len(NULL)=%d want 0", _pde_str_len(NULL));
+
+  CHECK(_pde_str_indexOf("Hello World", "World") == 6,
+        "indexOf('World')=%d want 6", _pde_str_indexOf("Hello World", "World"));
+  CHECK(_pde_str_indexOf("Hello World", "l") == 2,
+        "indexOf('l')=%d want 2", _pde_str_indexOf("Hello World", "l"));
+  CHECK(_pde_str_indexOf("abc", "z") == -1,
+        "indexOf(missing)=%d want -1", _pde_str_indexOf("abc", "z"));
+  CHECK(_pde_str_indexOf_from("aaaa", "a", 2) == 2,
+        "indexOf('a',from=2)=%d want 2", _pde_str_indexOf_from("aaaa", "a", 2));
+  CHECK(_pde_str_indexOf_from("aaaa", "a", 5) == -1,
+        "indexOf('a',from=5)=%d want -1", _pde_str_indexOf_from("aaaa", "a", 5));
+  CHECK(_pde_str_indexOf_from("Hello World", "o", 5) == 7,
+        "indexOf('o',from=5)=%d want 7", _pde_str_indexOf_from("Hello World", "o", 5));
+
+  CHECK(strcmp(_pde_str_substring2("Hello World", 0, 5), "Hello") == 0,
+        "substring(0,5)=%s", _pde_str_substring2("Hello World", 0, 5));
+  CHECK(strcmp(_pde_str_substring2("Hello", 1, 3), "el") == 0,
+        "substring(1,3)=%s", _pde_str_substring2("Hello", 1, 3));
+  CHECK(strcmp(_pde_str_substring2("Hello", 3, 1), "") == 0,
+        "substring(3,1) clamped=%s", _pde_str_substring2("Hello", 3, 1));
+  CHECK(strcmp(_pde_str_substring("Hello World", 6), "World") == 0,
+        "substring(6)=%s", _pde_str_substring("Hello World", 6));
+  CHECK(strcmp(_pde_str_substring("Hello", 3), "lo") == 0,
+        "substring(3)=%s", _pde_str_substring("Hello", 3));
+
+  CHECK(strcmp(_pde_str_toLowerCase("HeLLo 123"), "hello 123") == 0,
+        "toLowerCase=%s", _pde_str_toLowerCase("HeLLo 123"));
+  CHECK(strcmp(_pde_str_toUpperCase("HeLLo 123"), "HELLO 123") == 0,
+        "toUpperCase=%s", _pde_str_toUpperCase("HeLLo 123"));
+
+  CHECK(strcmp(_pde_str_replace("Hello World", "World", "There"), "Hello There") == 0,
+        "replace=%s", _pde_str_replace("Hello World", "World", "There"));
+  CHECK(strcmp(_pde_str_replace("aaa", "a", "bb"), "bbbbbb") == 0,
+        "replace all=%s", _pde_str_replace("aaa", "a", "bb"));
+  CHECK(strcmp(_pde_str_replace("abc", "x", "y"), "abc") == 0,
+        "replace missing=%s", _pde_str_replace("abc", "x", "y"));
+  CHECK(strcmp(_pde_str_replace("", "a", "b"), "") == 0,
+        "replace empty=%s", _pde_str_replace("", "a", "b"));
+
+  CHECK(_pde_str_equals("abc", "abc"), "equals(abc,abc)");
+  CHECK(!_pde_str_equals("abc", "abd"), "equals(abc,abd) should be false");
+  CHECK(!_pde_str_equals("abc", NULL), "equals(abc,NULL) should be false");
+  CHECK(!_pde_str_equals(NULL, "abc"), "equals(NULL,abc) should be false");
+  CHECK(_pde_str_eq("Hello World!", "Hello World!"), "_pde_str_eq equal");
+  CHECK(!_pde_str_eq("Hello World!", "Something else"), "_pde_str_eq unequal");
+  CHECK(_pde_str_equals_ci("HeLLo", "hELLo"), "equalsIgnoreCase(HeLLo,hELLo)");
+
+  CHECK(strcmp(_pde_str_trim("  pad  "), "pad") == 0,
+        "String.trim()=%s", _pde_str_trim("  pad  "));
+  CHECK(strcmp(_pde_str_trim("   "), "") == 0,
+        "String.trim(all-ws)=%s", _pde_str_trim("   "));
+}
+
 static void test_byte_boolean(void) {
   CHECK(byte(300) == 255, "byte(300)=%d want 255", byte(300));
   CHECK(byte(256) == 255, "byte(256)=%d want 255", byte(256));
@@ -233,6 +290,7 @@ int main(void) {
   test_byte_boolean();
   test_style_stack();
   test_trim();
+  test_str_methods();
   printf("%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

@@ -40,6 +40,7 @@ bool is_keyword(const char *str) {
 // Users can call sketch functions before their definitions, so C needs
 // prototypes. Later passes (name collision, forward decl) reuse this.
 static bool is_class_name(const char *name);
+static const char *symbol_type(const char *name);
 
 bool is_type_token(Token t) {
   if (t.type == TOKEN_KEYWORD &&
@@ -233,6 +234,300 @@ int rewrite_charat(Token *tokens, int num_tokens, Token **out_tokens) {
     Token comma = tokens[i]; strcpy(comma.text, ","); comma.type = TOKEN_SYMBOL;
     out[o++] = comma;
     i += 3; // consumed: receiver . charAt (
+  }
+  *out_tokens = out;
+  return o;
+}
+
+// String instance method dispatch. The TODO Phase-10 String refactor routes
+// receiver.method(args) -> _pde_str_METHOD(receiver, args) for the common
+// String methods (indexOf, substring, toLowerCase/UpperCase, replace, equals,
+// trim, length). Must run AFTER rewrite_classes() so the type symbol table is
+// populated; rewrites are gated on the receiver actually being a String.
+static bool is_str_method_name(const char *name) {
+  static const char *m[] = { "indexOf","substring","toLowerCase","toUpperCase",
+                             "replace","equals","trim","length", NULL };
+  for (int i = 0; m[i]; i++) if (strcmp(name, m[i]) == 0) return true;
+  return false;
+}
+
+// Is a token a String literal (as opposed to a Java char literal, which also
+// tokenizes as TOKEN_STRING but begins with a "'")?
+static bool tok_is_str_literal(const Token *t) {
+  return t->type == TOKEN_STRING && t->text[0] != '\'';
+}
+
+// Is a symbol's recorded type a non-string type (primitive or user class)?
+// Used to avoid over-rewriting method calls on int/class receivers.
+static bool symbol_type_non_string(const char *name) {
+  const char *ct = symbol_type(name);
+  if (!ct) return false;                  // unknown: be lenient (String-like)
+  if (strcmp(ct, "const char *") == 0 || strcmp(ct, "char *") == 0) return false;
+  return true;                            // known int/float/bool/class/etc.
+}
+
+// Does the receiver subexpression that ENDS at token index `i` (the token just
+// before a DOT) evaluate to a String? Handles: a string literal, an identifier
+// that is String-typed OR not known to be a non-string, and string-producing
+// calls (_pde_cat/_pde_charat/_pde_numf/_pde_str_*/str/trim).
+static bool receiver_is_string(Token *t, int i) {
+  if (tok_is_str_literal(&t[i])) return true;
+  int j = i;
+  if (t[j].type == TOKEN_SYMBOL && strcmp(t[j].text, ")") == 0) {
+    int depth = 0;
+    for (j = i; j >= 0; j--) {
+      if (strcmp(t[j].text, ")") == 0) { depth++; continue; }
+      if (strcmp(t[j].text, "(") == 0) { if (--depth <= 0) { j--; break; } continue; }
+      const char *s = t[j].text;
+      if ((t[j].type == TOKEN_SYMBOL &&
+           (strcmp(s, ";") == 0 || strcmp(s, ",") == 0 || strcmp(s, "{") == 0)) ||
+          (t[j].type == TOKEN_OPERATOR && strcmp(s, "=") == 0))
+        break;
+    }
+    if (j < 0) return false;
+  }
+  if (t[j].type == TOKEN_STRING) return t[j].text[0] != '\'';
+  if (t[j].type != TOKEN_IDENTIFIER) return false;
+  if (strcmp(t[j].text, "_pde_cat") == 0 || strcmp(t[j].text, "_pde_charat") == 0 ||
+      strcmp(t[j].text, "_pde_numf") == 0 || strcmp(t[j].text, "str") == 0 ||
+      strcmp(t[j].text, "trim") == 0 || strncmp(t[j].text, "_pde_str_", 9) == 0)
+    return true;
+  // String-typed, or unknown (lenient: nothing rules out a String).
+  return !symbol_type_non_string(t[j].text);
+}
+
+// Leftmost token index of the receiver subexpression ending at `i` (before a
+// DOT), so the whole receiver can be copied verbatim.
+static int receiver_start(Token *t, int i) {
+  int depth = 0;
+  int j = i;
+  while (j >= 0) {
+    const char *s = t[j].text;
+    if (t[j].type == TOKEN_SYMBOL) {
+      if (strcmp(s, ")") == 0 || strcmp(s, "]") == 0) depth++;
+      else if (strcmp(s, "(") == 0 || strcmp(s, "[") == 0) {
+        if (depth == 0) break;
+        depth--;
+      }
+      else if (depth == 0 && (strcmp(s, ",") == 0 || strcmp(s, ";") == 0 ||
+               strcmp(s, "{") == 0 || strcmp(s, "}") == 0)) break;
+    } else if (t[j].type == TOKEN_OPERATOR && depth == 0 &&
+               (strcmp(s, "=") == 0 || strcmp(s, "==") == 0 || strcmp(s, "+=") == 0))
+      break;
+    j--;
+  }
+  return j + 1;
+}
+
+// Count top-level comma-separated arguments in tokens [a+1 .. b) (the tokens
+// between the method's '(' and its matching ')', i.e. excluding the parens).
+static int count_args(Token *t, int open, int close) {
+  int depth = 0, n = 0;
+  bool started = false;
+  for (int q = open + 1; q < close; q++) {
+    if (!started && t[q].type != TOKEN_SYMBOL) started = true;
+    if (t[q].type == TOKEN_SYMBOL) {
+      if (strcmp(t[q].text, "(") == 0 || strcmp(t[q].text, "[") == 0) depth++;
+      else if (strcmp(t[q].text, ")") == 0 || strcmp(t[q].text, "]") == 0) depth--;
+      else if (depth == 0 && strcmp(t[q].text, ",") == 0) n++;
+    }
+  }
+  return started ? n + 1 : 0;
+}
+
+// Rewrite receiver.method(args) -> _pde_str_method(receiver, args) for String
+// receivers. Arity-specific names for substring/indexOf get a numeric suffix.
+int rewrite_str_methods(Token *tokens, int num_tokens, Token **out_tokens) {
+  Token *out = malloc(sizeof(Token) * (num_tokens * 5 + 64));
+  int o = 0;
+  for (int i = 0; i < num_tokens; i++) {
+    if (!(i + 3 < num_tokens &&
+          tokens[i+1].type == TOKEN_DOT &&
+          tokens[i+2].type == TOKEN_IDENTIFIER &&
+          is_str_method_name(tokens[i+2].text) &&
+          tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "(") == 0 &&
+          receiver_is_string(tokens, i))) {
+      out[o++] = tokens[i];
+      continue;
+    }
+    int recvStart = receiver_start(tokens, i);
+    int open = i + 3, close = open, depth = 0;
+    for (int q = open; q < num_tokens; q++) {
+      if (strcmp(tokens[q].text, "(") == 0) depth++;
+      else if (strcmp(tokens[q].text, ")") == 0) {
+        if (--depth == 0) { close = q; break; }
+      }
+    }
+    int nargs = count_args(tokens, open, close);
+    Token anchor = tokens[i];
+    char fnname[MAX_TOKEN_TEXT];
+    const char *meth = tokens[i+2].text;
+    if (strcmp(meth, "substring") == 0)
+      snprintf(fnname, MAX_TOKEN_TEXT, "_pde_str_substring%s", nargs > 1 ? "2" : "");
+    else if (strcmp(meth, "indexOf") == 0)
+      snprintf(fnname, MAX_TOKEN_TEXT, "_pde_str_indexOf%s", nargs > 1 ? "_from" : "");
+    else if (strcmp(meth, "length") == 0)
+      snprintf(fnname, MAX_TOKEN_TEXT, "_pde_str_len");
+    else
+      snprintf(fnname, MAX_TOKEN_TEXT, "_pde_str_%s", meth);
+
+    #define PDE_EMIT_A(txt, typ) do { Token mk = anchor; \
+        snprintf(mk.text, MAX_TOKEN_TEXT, "%s", txt); mk.type = typ; out[o++] = mk; } while (0)
+
+    PDE_EMIT_A(fnname, TOKEN_IDENTIFIER);
+    PDE_EMIT_A("(", TOKEN_SYMBOL);
+    for (int q = recvStart; q <= i; q++) out[o++] = tokens[q]; // receiver tokens
+    if (nargs > 0) PDE_EMIT_A(",", TOKEN_SYMBOL);
+    for (int q = open + 1; q < close; q++) {
+      Token arg = tokens[q];
+      if (arg.type == TOKEN_STRING && arg.text[0] == '\'') {
+        // convert a Java char-literal argument to a one-char string literal
+        int len = (int)strlen(arg.text);
+        if (len >= 2) {
+          char tmp[MAX_TOKEN_TEXT];
+          int w = 0;
+          tmp[w++] = '"';
+          for (int c = 1; c < len - 1 && w < MAX_TOKEN_TEXT - 2; c++) tmp[w++] = arg.text[c];
+          tmp[w++] = '"';
+          tmp[w] = '\0';
+          snprintf(arg.text, MAX_TOKEN_TEXT, "%s", tmp);
+        }
+      }
+      out[o++] = arg;
+    }
+    out[o++] = tokens[close]; // ')'
+    #undef PDE_EMIT_A
+    i = close;
+  }
+  *out_tokens = out;
+  return o;
+}
+
+// Extent of a statement RHS starting at `start`: to end of statement, stopping
+// at a top-level ','/';'/'}' or unbalanced closer. (Used for `+=` rewriting.)
+static int rhs_end(Token *t, int n, int start) {
+  int depth = 0, j = start;
+  while (j < n) {
+    Token tk = t[j];
+    if (tk.type == TOKEN_SYMBOL) {
+      const char *s = tk.text;
+      if (strcmp(s, "(") == 0 || strcmp(s, "[") == 0) depth++;
+      else if (strcmp(s, ")") == 0 || strcmp(s, "]") == 0) {
+        if (depth == 0) break;
+        depth--;
+      }
+      else if (depth == 0 && (strcmp(s, ",") == 0 || strcmp(s, ";") == 0 || strcmp(s, "}") == 0)) break;
+    } else if (tk.type == TOKEN_EOF) break;
+    j++;
+  }
+  return j;
+}
+
+// Does the token range [start, end) evaluate to a String? Returns true for a
+// (non-char) string literal, a known String-typed symbol, or a string-producing
+// call; an identifier with no recorded symbol type is also treated as a String
+// (the top-of-file first global is not in the symbol table), while known
+// primitives/classes are rejected.
+static bool range_is_string(Token *t, int start, int end) {
+  if (end <= start) return false;
+  if (end - start >= 2) {
+    if (t[start].type == TOKEN_IDENTIFIER) {
+      const char *nm = t[start].text;
+      if (strcmp(nm, "_pde_cat") == 0 || strcmp(nm, "_pde_charat") == 0 ||
+          strcmp(nm, "_pde_numf") == 0 || strcmp(nm, "str") == 0 ||
+          strcmp(nm, "trim") == 0 || strncmp(nm, "_pde_str_", 9) == 0) {
+        if (strcmp(t[start+1].text, "(") == 0) return true;
+      }
+    }
+    return false;
+  }
+  if (t[start].type == TOKEN_STRING) return t[start].text[0] != '\'';
+  if (t[start].type != TOKEN_IDENTIFIER) return false;
+  if (strncmp(t[start].text, "_pde_str_", 9) == 0 ||
+      strcmp(t[start].text, "str") == 0 || strcmp(t[start].text, "trim") == 0)
+    return true;
+  if (symbol_type_non_string(t[start].text)) return false; // primitive/class
+  return true; // String-typed or unknown
+}
+
+// Rewrite `s += expr` -> `s = _pde_cat(s, (expr))` for String-typed LHS so the
+// compound-assign operator works like Java String concatenation-assign.
+int rewrite_str_assign(Token *tokens, int num_tokens, Token **out_tokens) {
+  Token *out = malloc(sizeof(Token) * (num_tokens * 4 + 64));
+  int o = 0;
+  for (int i = 0; i < num_tokens; i++) {
+    if (!(tokens[i].type == TOKEN_IDENTIFIER &&
+          i + 1 < num_tokens &&
+          tokens[i+1].type == TOKEN_OPERATOR &&
+          strcmp(tokens[i+1].text, "+=") == 0 &&
+          i + 2 < num_tokens)) {
+      out[o++] = tokens[i];
+      continue;
+    }
+    // gate: LHS must be a String (or not known to be a non-string)
+    if (symbol_type_non_string(tokens[i].text)) {
+      out[o++] = tokens[i];
+      continue;
+    }
+    int rhsS = i + 2;
+    int rhsE = rhs_end(tokens, num_tokens, rhsS);
+    bool rhsStr = range_is_string(tokens, rhsS, rhsE);
+    Token anchor = tokens[i];
+    #define PDE_EMIT_AS(txt, typ) do { Token mk = anchor; \
+        snprintf(mk.text, MAX_TOKEN_TEXT, "%s", txt); mk.type = typ; out[o++] = mk; } while (0)
+    out[o++] = tokens[i];               // s
+    PDE_EMIT_AS("=", TOKEN_OPERATOR);
+    PDE_EMIT_AS("_pde_cat", TOKEN_IDENTIFIER);
+    PDE_EMIT_AS("(", TOKEN_SYMBOL);
+    out[o++] = tokens[i];               // s
+    PDE_EMIT_AS(",", TOKEN_SYMBOL);
+    if (rhsStr) {
+      for (int q = rhsS; q < rhsE; q++) out[o++] = tokens[q];
+    } else {
+      PDE_EMIT_AS("_pde_numf", TOKEN_IDENTIFIER);
+      PDE_EMIT_AS("(", TOKEN_SYMBOL);
+      for (int q = rhsS; q < rhsE; q++) out[o++] = tokens[q];
+      PDE_EMIT_AS(")", TOKEN_SYMBOL);
+    }
+    PDE_EMIT_AS(")", TOKEN_SYMBOL);
+    #undef PDE_EMIT_AS
+    i = rhsE - 1;
+  }
+  *out_tokens = out;
+  return o;
+}
+
+// Rewrite `a == b` / `a != b` -> `_pde_str_eq(a, b)` / `!_pde_str_eq(a, b)`
+// when both operands are single-token Strings, so Java String equality
+// semantics hold (C would otherwise compare pointers).
+int rewrite_str_cmp(Token *tokens, int num_tokens, Token **out_tokens) {
+  Token *out = malloc(sizeof(Token) * (num_tokens * 2 + 24));
+  int o = 0;
+  for (int i = 0; i < num_tokens; i++) {
+    bool isNeq = tokens[i].type == TOKEN_OPERATOR && strcmp(tokens[i].text, "!=") == 0;
+    bool isEq  = tokens[i].type == TOKEN_OPERATOR && strcmp(tokens[i].text, "==") == 0;
+    if ((isEq || isNeq) && i - 1 >= 0 && i + 1 < num_tokens) {
+      int ls = receiver_start(tokens, i - 1);
+      bool lStr = range_is_string(tokens, ls, i);
+      bool rStr = range_is_string(tokens, i + 1, i + 2);
+      if (lStr && rStr) {
+        o -= (i - ls); // drop the already-emitted left operand from output tail
+        Token anchor = tokens[i];
+        #define PDE_EMIT_AE(txt, typ) do { Token mk = anchor; \
+            snprintf(mk.text, MAX_TOKEN_TEXT, "%s", txt); mk.type = typ; out[o++] = mk; } while (0)
+        if (isNeq) PDE_EMIT_AE("!", TOKEN_OPERATOR);
+        PDE_EMIT_AE("_pde_str_eq", TOKEN_IDENTIFIER);
+        PDE_EMIT_AE("(", TOKEN_SYMBOL);
+        for (int q = ls; q < i; q++) out[o++] = tokens[q];
+        PDE_EMIT_AE(",", TOKEN_SYMBOL);
+        out[o++] = tokens[i + 1];
+        PDE_EMIT_AE(")", TOKEN_SYMBOL);
+        #undef PDE_EMIT_AE
+        i += 1;
+        continue;
+      }
+    }
+    out[o++] = tokens[i];
   }
   *out_tokens = out;
   return o;
@@ -1630,6 +1925,20 @@ int main(int argc, char *argv[]) {
     free(tokens);
     tokens = rewritten;
     num_tokens = new_count;
+  }
+
+  // Phase 10 Tier A item 9 / Tier B: real String instance methods + string
+  // operators. Symbol table is populated by rewrite_classes above, so these
+  // can gate on receiver/operand types. Order: method-call dispatch first,
+  // then the `+=` and == / != operator rewrites.
+  {
+    Token *r;
+    int n = rewrite_str_methods(tokens, num_tokens, &r);
+    free(tokens); tokens = r; num_tokens = n;
+    n = rewrite_str_assign(tokens, num_tokens, &r);
+    free(tokens); tokens = r; num_tokens = n;
+    n = rewrite_str_cmp(tokens, num_tokens, &r);
+    free(tokens); tokens = r; num_tokens = n;
   }
 
   // Java allows a variable and a function to share a name (separate

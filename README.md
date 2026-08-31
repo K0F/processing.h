@@ -17,7 +17,7 @@ single-header runtime API, and `pdeide` is a small editor wrapping the chain.
 **Limitations:**
 -   No inheritance, generics, or external Java libraries.
 -   `try/catch` not implemented.
--   Most `String` methods are not yet supported.
+-   Most `String` methods are not yet supported. Supported: `.charAt(i)`, `.indexOf()`, `.substring()`, `.toLowerCase()`, `.toUpperCase()`, `.replace()`, `.equals()`, `.length()`, `.trim()`, plus `+=` concatenation and `==`/`!=` operators.
 
 ## Quick start
 

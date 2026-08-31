@@ -1231,6 +1231,103 @@ static const char *_pde_charat(const char *s, int i) {
   return out;
 }
 
+// String instance methods (refactored to _pde_str_*) //////////////////////
+// Rotating static buffers (as above) so nested/subsequent calls stay valid.
+static inline char *_pde_dup_len(const char *s, size_t n);
+static inline const char *_pde_trim1(const char *s);
+static inline int _pde_str_len(const char *s) { return s ? (int)strlen(s) : 0; }
+
+// indexOf: index of first occurrence of `needle` at or after `from`, or -1.
+static inline int _pde_str_indexOf(const char *s, const char *needle) {
+  if (!s || !needle) return -1;
+  const char *p = strstr(s, needle);
+  return p ? (int)(p - s) : -1;
+}
+static inline int _pde_str_indexOf_from(const char *s, const char *needle, int from) {
+  if (!s) return -1;
+  if (from < 0) from = 0;
+  if (from >= (int)strlen(s)) return -1;
+  const char *p = strstr(s + from, needle);
+  return p ? (int)(p - s) : -1;
+}
+
+// substring(begin) and substring(begin, end): fresh copy clamped to bounds.
+static inline const char *_pde_str_substring(const char *s, int begin) {
+  if (!s) return "";
+  int n = (int)strlen(s);
+  if (begin < 0) begin = 0;
+  if (begin > n) begin = n;
+  return _pde_dup_len(s + begin, (size_t)(n - begin));
+}
+static inline const char *_pde_str_substring2(const char *s, int begin, int end) {
+  if (!s) return "";
+  int n = (int)strlen(s);
+  if (begin < 0) begin = 0;
+  if (begin > n) begin = n;
+  if (end < begin) end = begin;
+  if (end > n) end = n;
+  return _pde_dup_len(s + begin, (size_t)(end - begin));
+}
+
+static inline const char *_pde_str_toLowerCase(const char *s) {
+  if (!s) return "";
+  char *out = _pde_dup_len(s, strlen(s));
+  if (!out) return s;
+  for (char *c = out; *c; c++)
+    if (*c >= 'A' && *c <= 'Z') *c = (char)(*c + 32);
+  return out;
+}
+static inline const char *_pde_str_toUpperCase(const char *s) {
+  if (!s) return "";
+  char *out = _pde_dup_len(s, strlen(s));
+  if (!out) return s;
+  for (char *c = out; *c; c++)
+    if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 32);
+  return out;
+}
+
+// replace: replaces every non-overlapping occurrence of `find` with `repl`.
+static inline const char *_pde_str_replace(const char *s, const char *find, const char *repl) {
+  if (!s) return "";
+  if (!find || !*find) return s;
+  if (!repl) repl = "";
+  int findLen = (int)strlen(find), replLen = (int)strlen(repl);
+  int n = (int)strlen(s), count = 0;
+  for (int i = 0; i <= n - findLen; ) {
+    if (strncmp(s + i, find, (size_t)findLen) == 0) { count++; i += findLen; }
+    else i++;
+  }
+  char *out = (char *)malloc((size_t)(n - count * findLen + count * replLen) + 1);
+  if (!out) return s;
+  int o = 0;
+  for (int i = 0; i < n; ) {
+    if (i <= n - findLen && strncmp(s + i, find, (size_t)findLen) == 0) {
+      memcpy(out + o, repl, (size_t)replLen); o += replLen; i += findLen;
+    } else {
+      out[o++] = s[i++];
+    }
+  }
+  out[o] = '\0';
+  return out;
+}
+
+static inline bool _pde_str_equals(const char *a, const char *b)
+  { return a && b && strcmp(a, b) == 0; }
+static inline char _pde_str_lower(char c)
+  { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
+static inline bool _pde_str_equals_ci(const char *a, const char *b) {
+  if (!a || !b) return false;
+  while (*a && *b) {
+    if (_pde_str_lower(*a) != _pde_str_lower(*b)) return false;
+    a++; b++;
+  }
+  return *a == '\0' && *b == '\0';
+}
+// String.trim() method form (reuse the standalone _pde_trim1).
+static inline const char *_pde_str_trim(const char *s) { return _pde_trim1(s); }
+// String comparison target for == / != operators.
+#define _pde_str_eq(A, B) _pde_str_equals((A), (B))
+
 // Java expand(): grow an array keeping contents; new tail zero-filled.
 // Sizes are remembered from _pde_array_new so the copy length is known.
 typedef struct { void *ptr; size_t elems; size_t esz; } _PdeArrMeta;
