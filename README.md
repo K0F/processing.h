@@ -36,10 +36,35 @@ ctest --test-dir build         # headless unit tests (no window/GPU needed)
 cmake --build build --target release   # -> build/pdeide-linux.tar.gz
 ```
 
+## Android (Termux)
+
+Sketches can be built and run directly on an Android phone inside **Termux**:
+the whole pipeline (pde2c → gcc → raylib) runs on-device, no Android NDK or
+host cross-compiler needed. The window appears through **Termux:X11**.
+
+**One-time setup** (in a Termux session):
+
+```sh
+# Termux:X11 is an Android app — install that APK from its GitHub releases first.
+./android-setup.sh      # enables x11-repo, installs termux-x11-nightly, openbox, freetype, raylib
+```
+
+**Build + run a sketch** (open the Termux:X11 app, then in Termux):
+
+```sh
+./runAndroid.sh                # build+run the sketch in the current directory
+./runAndroid.sh ~/my/sketch    # build+run a sketch elsewhere
+```
+
+`pdedeps` detects Termux (bionic libc / `$PREFIX` under `/data/data`) and links
+against the on-device `raylib` + `freetype` from `pkg`, dropping the
+Linux-only `-lrt` and using `$PREFIX` include/ lib paths — so `./run`,
+`wildtest` and `corpus.sh` work identically on the phone.
+
 ## Tests & health checks
 
 **Unit tests** verify the `pde2c` transpiler and `processing.h` runtime functions.
--   `make test` runs 45 editor checks and 87 runtime checks, verified by `ctest`.
+-   `make test` runs 45 editor checks and 116 runtime checks, verified by `ctest`.
 
 **Real-world corpus tests** run a batch of Processing sketches through the transpiler:
 

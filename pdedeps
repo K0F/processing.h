@@ -5,16 +5,52 @@
 #   ./pdedeps --includes    include-search flags only (-I...)
 #   ./pdedeps --libs        link flags only (static archive paths / -l libs)
 #
-# Prefers the vendored static archives + headers that `cmake` builds under
-# build/static and third_party/ (the self-contained setup), and falls back
-# to system-installed raylib/freetype via pkg-config.
+# Host (GNU/Linux): prefers the vendored static archives + headers that `cmake`
+# builds under build/static and third_party/ (self-contained), and falls back to
+# system-installed raylib/freetype via pkg-config.
+#
+# Termux (Android):  detects the Termux userspace and switches to the on-device
+# system libraries under $PREFIX. bionic libc has no separate librt (and the
+# stale `librt` stub is best skipped), so -lrt is dropped; library search and
+# freetype come from $PREFIX via pkg-config.
 set -u
 
 base=$(dirname "$(readlink -f "$0")")
 ray_static="$base/build/static/raylib/raylib/libraylib.a"
 ft_static="$base/build/static/freetype/libfreetype.a"
 
-if [ -f "$ray_static" ] && [ -f "$ft_static" ]; then
+# Detect Termux: bionic libc kernel reports "Android", and $PREFIX points
+# inside the Termux data dir on device. Either button switches to the mobile
+# (on-device) raylib/freetype/GL linkage.
+is_termux=0
+[ "$(uname -o 2>/dev/null)" = "Android" ] && is_termux=1
+case "${PREFIX:-}" in
+  /data/data/* ) is_termux=1 ;;
+esac
+
+if [ "$is_termux" = "1" ]; then
+  # On-device: system raylib + freetype installed via `pkg`, plus the GL/X11
+  # libraries that termux-x11 provides. No -lrt on bionic.
+  INC="-I$base"
+  RL_CF=$(pkg-config --cflags raylib 2>/dev/null)
+  FT_CF=$(pkg-config --cflags freetype2 2>/dev/null)
+  [ -n "$RL_CF" ] && INC="$INC $RL_CF"
+  [ -n "$FT_CF" ] && INC="$INC $FT_CF"
+  if [ "${1:-}" = "--libs" ]; then
+    LIBS=""
+    RL_LB=$(pkg-config --libs raylib 2>/dev/null)
+    FT_LB=$(pkg-config --libs freetype2 2>/dev/null)
+    [ -n "$RL_LB" ] && LIBS="$LIBS $RL_LB"
+    [ -n "$FT_LB" ] && LIBS="$LIBS $FT_LB"
+    LIBS="$LIBS -lGL -lm -lpthread -ldl -lX11"
+    case "$(uname -m)" in
+      armv7l|armv8l) LIBS="$LIBS -latomic" ;;
+    esac
+    echo "$LIBS"
+  else
+    echo "$INC"
+  fi
+elif [ -f "$ray_static" ] && [ -f "$ft_static" ]; then
   INC="-I$base -I$base/third_party/raylib/src -I$base/third_party/freetype/include -I$base/build/static/freetype/include"
   if [ "${1:-}" = "--libs" ]; then
     echo "$ray_static $ft_static -lGL -lm -lpthread -ldl -lrt -lX11"
