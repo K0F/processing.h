@@ -32,6 +32,11 @@ pass=0
 fail=0
 broken=0
 
+# Normalize volatile paths out of diagnostic lines so `wildtest A` vs `wildtest B`
+# output diffs byte-for-byte across runs (temp dirs rotate per invocation):
+#   /tmp/pdewild.XXXXXX/sketch.c:9:9: error: ...   ->   error: ...
+strip_tmp() { sed "s|$TMP/||g; s|^sketch\.c:[0-9][0-9]*:[0-9][0-9]*: *||"; }
+
 for dir in $(find "$TREE" -type f -name '*.pde' -exec dirname {} \; | sort -u); do
   MAIN="$dir/none.pde"
   [ -f "$dir/$(basename "$dir").pde" ] && MAIN="$dir/$(basename "$dir").pde"
@@ -59,7 +64,7 @@ for dir in $(find "$TREE" -type f -name '*.pde' -exec dirname {} \; | sort -u); 
   else
     # source-mapped first error (sketch lines) beats generated-code noise
     first=$(grep -m1 '^sketch\.pde:[0-9]' "$TMP/gcc.err" | sed 's/^sketch\.pde:[0-9]*: *//')
-    [ -z "$first" ] && first=$(grep -m1 'error:' "$TMP/gcc.err" | sed 's/^ *//')
+    [ -z "$first" ] && first=$(grep -m1 'error:' "$TMP/gcc.err" | sed 's/^ *//' | strip_tmp)
     case "$first" in
       *"expected*"*) broken=$((broken + 1))
         printf '%-46s SOURCE-BROKEN  %s\n' "$tag" "${first:-unknown}" ;;
