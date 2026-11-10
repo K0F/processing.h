@@ -176,7 +176,6 @@ typedef PGraphics PGraphics2D;
 
 typedef void *GL;
 typedef void *GLU;
-typedef void *GLSL;
 typedef void *GLAutoDrawable;
 
 static inline void *_pde_pgl_beginGL(void) { return NULL; }
@@ -529,7 +528,17 @@ static inline PFont createFont3(const char *filename, int fontSize, int smooth) 
 #define HSB 2
 #define ARGB 3
 #define ALPHA 4
-static inline void beginRecord(int renderer, const char *filename) { (void)renderer; (void)filename; }
+#ifndef SHAPE
+#define SHAPE 1
+#endif
+#ifndef MODEL
+#define MODEL 2
+#endif
+
+static inline void _pde_beginRecord2(int renderer, const char *filename) { (void)renderer; (void)filename; }
+static inline void _pde_beginRecord1(RenderTexture2D pg) { (void)pg; }
+#define _PDE_BEGINREC_CHOOSER(_1, _2, NAME, ...) NAME
+#define beginRecord(...) _PDE_BEGINREC_CHOOSER(__VA_ARGS__, _pde_beginRecord2, _pde_beginRecord1)(__VA_ARGS__)
 static inline void endRecord(void) {}
 static inline void colorMode1(int mode) { (void)mode; }
 static inline void colorMode2(int mode, float max1) { (void)mode; (void)max1; }
@@ -668,6 +677,13 @@ static inline void _pde_println_vfmt(const char *format, ...) {
 }
 
 static inline void _pde_print_str(const char *s) { printf("%s\n", s); fflush(stdout); }
+static inline void _pde_print_str_arr(const char **arr) {
+  if (!arr) { printf("null\n"); fflush(stdout); return; }
+  for (int i = 0; arr[i] != NULL; i++) {
+    printf("[%d] \"%s\"\n", i, arr[i]);
+  }
+  fflush(stdout);
+}
 static inline void _pde_print_num(double v) { printf("%g\n", v); fflush(stdout); }
 
 // println(): Processor-style 0/1/multi arg dispatch. Single numeric args are
@@ -676,7 +692,9 @@ static inline void _pde_print_num(double v) { printf("%g\n", v); fflush(stdout);
 #define println(...) PRINTLN_CHOOSER(0, __VA_ARGS__, _pde_println_fmt, _pde_println_fmt, _pde_println_one, _pde_println_none)(__VA_ARGS__)
 #define _pde_println_none() (void)printf("\n")
 #define _pde_println_one(v) _Generic((v), \
-    const char *: _pde_print_str, char *: _pde_print_str, default: _pde_print_num)(v)
+    const char *: _pde_print_str, char *: _pde_print_str, \
+    const char **: _pde_print_str_arr, char **: (void (*)(const char **))_pde_print_str_arr, \
+    default: _pde_print_num)(v)
 #define _pde_println_fmt(...) _pde_println_vfmt(__VA_ARGS__)
 
 static inline void _pde_print_strl(const char *s) { printf("%s", s); fflush(stdout); }
@@ -693,7 +711,9 @@ static inline void _pde_print_vfmt(const char *format, ...) {
 #define PRINT_CHOOSER(_1, _2, _3, NAME, ...) NAME
 #define print(...) PRINT_CHOOSER(0, __VA_ARGS__, _pde_print_fmt, _pde_print_one)(__VA_ARGS__)
 #define _pde_print_one(v) _Generic((v), \
-    const char *: _pde_print_strl, char *: _pde_print_strl, default: _pde_print_numl)(v)
+    const char *: _pde_print_strl, char *: _pde_print_strl, \
+    const char **: _pde_print_str_arr, char **: (void (*)(const char **))_pde_print_str_arr, \
+    default: _pde_print_numl)(v)
 #define _pde_print_fmt(...) _pde_print_vfmt(__VA_ARGS__)
 
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -908,8 +928,10 @@ static inline void background1_col(uint32_t c) {
 }
 
 static inline void background_img(Image img);
+static inline void background_pg(RenderTexture2D pg);
 #define background1(A) _Generic((A), \
     Image: background_img, \
+    RenderTexture2D: background_pg, \
     default: background1_col)(A)
 
 // loop control /////////////////////////////////////////////////////////////////////////
@@ -1279,7 +1301,9 @@ static inline const char *_pde_nfc_f1(double v) { return _pde_numfmt(v, 0, 0, 0,
 static inline const char *_pde_nfc_f2(double v, int d) { return _pde_numfmt(v, 0, d, 0, 1, 0); }
 
 // string concat / charAt (rotating static buffers, same trick as nf) /////
-static const char *_pde_numf(double v) {
+static inline const char *_pde_str_identity(const char *s) { return s; }
+static inline const char *_pde_str_identity_mut(char *s) { return s; }
+static const char *_pde_numf_real(double v) {
   static char bufs[4][64];
   static int idx = 0;
   char *out = bufs[idx];
@@ -1287,6 +1311,27 @@ static const char *_pde_numf(double v) {
   snprintf(out, 64, "%g", v);
   return out;
 }
+
+#define _pde_numf(x) _Generic((x), \
+  const char *: _pde_str_identity, \
+  char *: _pde_str_identity_mut, \
+  default: _pde_numf_real \
+)(x)
+
+static const char *sketchPath = ".";
+static const char *dataPath = "data";
+static inline const char *_pde_sketchpath_fn(const char *where) {
+  static char buf[512];
+  snprintf(buf, sizeof(buf), "./%s", (where && where[0]) ? where : "");
+  return buf;
+}
+static inline const char *_pde_datapath_fn(const char *where) {
+  static char buf[512];
+  snprintf(buf, sizeof(buf), "data/%s", (where && where[0]) ? where : "");
+  return buf;
+}
+
+static const char *_pde_pfont_list[] = { "Default", "SansSerif", "Serif", "Monospaced", NULL };
 
 static const char *_pde_cat(const char *a, const char *b) {
   static char bufs[4][1024];
@@ -1761,6 +1806,107 @@ static inline GSMovieMaker GSMovieMaker_ctor_impl(void *parent, ...) {
 }
 #define GSMovieMaker_ctor(...) GSMovieMaker_ctor_impl(0, ##__VA_ARGS__)
 #define MovieMaker_ctor(...) GSMovieMaker_ctor_impl(0, ##__VA_ARGS__)
+#define GifMaker GSMovieMaker
+#define GifMaker_ctor(...) GSMovieMaker_ctor_impl(0, ##__VA_ARGS__)
+
+#define AudioSample AudioSnippet
+#define AudioSample_ctor(...) AudioSnippet_ctor_impl(0, ##__VA_ARGS__)
+
+// GSPipeline & Movie video stubs
+typedef struct {
+  void *data;
+  int width;
+  int height;
+  int mipmaps;
+  int format;
+  bool (*available)(void);
+  void (*read)(void);
+  void (*loadPixels)(void);
+  void (*updatePixels)(void);
+  void (*filter)(int kind, ...);
+  void (*mask)(void *m);
+  uint32_t *pixels;
+} GSPipeline;
+typedef GSPipeline Movie;
+
+static inline bool _gsp_avail(void) { return false; }
+static inline void _gsp_read(void) {}
+static inline void _gsp_loadPixels(void) {}
+static inline void _gsp_updatePixels(void) {}
+static inline void _gsp_filter(int kind, ...) { (void)kind; }
+static inline void _gsp_mask(void *m) { (void)m; }
+
+static inline GSPipeline GSPipeline_ctor_impl(void *parent, ...) {
+  (void)parent;
+  GSPipeline p;
+  memset(&p, 0, sizeof(p));
+  p.width = 320; p.height = 240;
+  p.data = calloc(320 * 240, sizeof(uint32_t));
+  _pde_arr_register(p.data, 320 * 240, sizeof(uint32_t));
+  p.pixels = (uint32_t *)p.data;
+  p.available = _gsp_avail;
+  p.read = _gsp_read;
+  p.loadPixels = _gsp_loadPixels;
+  p.updatePixels = _gsp_updatePixels;
+  p.filter = _gsp_filter;
+  p.mask = _gsp_mask;
+  return p;
+}
+#define GSPipeline_ctor(...) GSPipeline_ctor_impl(0, ##__VA_ARGS__)
+#define Movie_ctor(...) GSPipeline_ctor_impl(0, ##__VA_ARGS__)
+
+// XMLElement library stub
+typedef struct _XMLElement XMLElement;
+struct _XMLElement {
+  XMLElement (*getChild)(int idx);
+  float (*getFloatAttribute)(const char *attr);
+  int (*getIntAttribute)(const char *attr);
+  const char *(*getStringAttribute)(const char *attr);
+  const char *(*getContent)(void);
+  int (*getChildCount)(void);
+};
+
+static inline XMLElement XMLElement_ctor_impl(void *parent, ...);
+static inline XMLElement _xml_get_child(int idx) { (void)idx; return XMLElement_ctor_impl(NULL); }
+static inline float _xml_get_float(const char *attr) { (void)attr; return 0.0f; }
+static inline int _xml_get_int(const char *attr) { (void)attr; return 0; }
+static inline const char *_xml_get_str(const char *attr) { (void)attr; return ""; }
+static inline const char *_xml_get_content(void) { return ""; }
+static inline int _xml_get_count(void) { return 0; }
+
+static inline XMLElement XMLElement_ctor_impl(void *parent, ...) {
+  (void)parent;
+  XMLElement x;
+  x.getChild = _xml_get_child;
+  x.getFloatAttribute = _xml_get_float;
+  x.getIntAttribute = _xml_get_int;
+  x.getStringAttribute = _xml_get_str;
+  x.getContent = _xml_get_content;
+  x.getChildCount = _xml_get_count;
+  return x;
+}
+#define XMLElement_ctor(...) XMLElement_ctor_impl(0, ##__VA_ARGS__)
+
+// geomerative library stubs (RPoint, RShape, RG)
+typedef struct { float x, y; } RPoint;
+typedef struct {
+  RPoint *(*getPoints)(void);
+  int (*countPaths)(void);
+} RShape;
+static inline RPoint *_rs_getPoints(void) { static RPoint pts[1] = {{0,0}}; return pts; }
+static inline int _rs_countPaths(void) { return 0; }
+static inline RShape RShape_ctor_impl(void *parent, ...) {
+  (void)parent;
+  RShape s;
+  s.getPoints = _rs_getPoints;
+  s.countPaths = _rs_countPaths;
+  return s;
+}
+#define RShape_ctor(...) RShape_ctor_impl(0, ##__VA_ARGS__)
+
+typedef struct { void (*init)(void *parent); } _Pde_RG;
+static inline void _rg_init(void *p) { (void)p; }
+static _Pde_RG RG = { .init = _rg_init };
 
 // ArrayList (in-memory subset). Each element is a malloc'ed copy of the
 // original value; `get` returns a void* to that copy so the Processing
@@ -2103,11 +2249,15 @@ static inline void updatePixels(void) {
   DrawTexture(_pixelsTexture, 0, 0, WHITE);
 }
 
-static inline PGraphics createGraphics(int w, int h) {
+static inline PGraphics _pde_createGraphics2(int w, int h) {
   PGraphics pg = LoadRenderTexture(w, h);
   SetTextureFilter(pg.texture, TEXTURE_FILTER_POINT);
   return pg;
 }
+#define _pde_createGraphics3(w, h, r) _pde_createGraphics2(w, h)
+#define _pde_createGraphics4(w, h, r, f) _pde_createGraphics2(w, h)
+#define _PDE_CG_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
+#define createGraphics(...) _PDE_CG_CHOOSER(__VA_ARGS__, _pde_createGraphics4, _pde_createGraphics3, _pde_createGraphics2)(__VA_ARGS__)
 
 static inline void beginGraphics(PGraphics pg) {
   BeginTextureMode(pg);
@@ -2189,7 +2339,8 @@ static void _pimage_invalidate(const void *dataKey) {
 // Processing filter constants, prefixed: raylib's color macros (#define GRAY
 // ...) would collide with the bare Processing names; pde2c maps them over
 enum { _PIMAGE_BLUR = 101, _PIMAGE_GRAY = 102, _PIMAGE_INVERT = 103,
-       _PIMAGE_THRESHOLD = 104, _PIMAGE_POSTERIZE = 105, _PIMAGE_OPAQUE = 106 };
+       _PIMAGE_THRESHOLD = 104, _PIMAGE_POSTERIZE = 105, _PIMAGE_OPAQUE = 106,
+       _PIMAGE_ERODE = 107, _PIMAGE_DILATE = 108 };
 
 #ifndef BLUR
 #define BLUR _PIMAGE_BLUR
@@ -2205,6 +2356,12 @@ enum { _PIMAGE_BLUR = 101, _PIMAGE_GRAY = 102, _PIMAGE_INVERT = 103,
 #endif
 #ifndef OPAQUE
 #define OPAQUE _PIMAGE_OPAQUE
+#endif
+#ifndef ERODE
+#define ERODE _PIMAGE_ERODE
+#endif
+#ifndef DILATE
+#define DILATE _PIMAGE_DILATE
 #endif
 
 static inline void filter2(int kind, float arg) { (void)kind; (void)arg; }
@@ -2246,26 +2403,121 @@ static inline void image_pim(PImage img, float x, float y, float w, float h) {
                  _tintEnabled ? _tintColor : WHITE);
 }
 
+static inline void image_pim3(PImage img, float x, float y) {
+  image_pim(img, x, y, (float)img.width, (float)img.height);
+}
+static inline void image_pg3(PGraphics pg, float x, float y) {
+  image_pg(pg, x, y, (float)pg.texture.width, (float)pg.texture.height);
+}
+
 static inline void background_img(Image img) {
   image_pim(img, 0.0f, 0.0f, (float)img.width, (float)img.height);
 }
 
-#define image(first, ...) \
-  _Generic((first), Image: image_pim, RenderTexture2D: image_pg)(first, __VA_ARGS__)
+static inline void background_pg(RenderTexture2D pg) {
+  image_pg(pg, 0.0f, 0.0f, (float)width, (float)height);
+}
 
-// ---- PImage member operations (rewritten by pde2c from img.op(...) form)
+#define _pde_image_3(img, x, y) _Generic((img), \
+  Image: image_pim3, \
+  RenderTexture2D: image_pg3 \
+)((img), (x), (y))
+
+#define _pde_image_5(img, x, y, w, h) _Generic((img), \
+  Image: image_pim, \
+  RenderTexture2D: image_pg \
+)((img), (x), (y), (w), (h))
+
+#define _PDE_IMAGE_CHOOSER(_1, _2, _3, _4, _5, NAME, ...) NAME
+#define image(...) _PDE_IMAGE_CHOOSER(__VA_ARGS__, _pde_image_5, DUMMY, _pde_image_3)(__VA_ARGS__)
+
+static inline void dispose(void) {}
+static inline void flush(void) {}
+#define pvector_heading2D pvector_heading
+
+// ---- PImage / PGraphics member operations (rewritten by pde2c from img.op(...) form)
+
+static Color *_pg_pixel_buffer = NULL;
+static int _pg_pixel_buffer_cap = 0;
+
+static inline uint32_t *_pg_loadPixels(RenderTexture2D *rt) {
+  int w = rt->texture.width;
+  int h = rt->texture.height;
+  int needed = w * h;
+  if (!_pg_pixel_buffer || _pg_pixel_buffer_cap < needed) {
+    _pg_pixel_buffer = (Color *)realloc(_pg_pixel_buffer, (size_t)needed * sizeof(Color));
+    _pg_pixel_buffer_cap = needed;
+  }
+  _pde_arr_register(_pg_pixel_buffer, (size_t)needed, sizeof(Color));
+  rlDrawRenderBatchActive();
+  Image img = LoadImageFromTexture(rt->texture);
+  Color *colors = LoadImageColors(img);
+  if (colors) {
+    for (int y = 0; y < h; y++) {
+      Color *srcRow = &colors[(h - 1 - y) * w];
+      Color *dstRow = &_pg_pixel_buffer[y * w];
+      for (int x = 0; x < w; x++) dstRow[x] = srcRow[x];
+    }
+    UnloadImageColors(colors);
+  }
+  UnloadImage(img);
+  return (uint32_t *)_pg_pixel_buffer;
+}
+
+static inline uint32_t *_pg_pixels(RenderTexture2D *rt) {
+  int w = rt->texture.width;
+  int h = rt->texture.height;
+  int needed = w * h;
+  if (!_pg_pixel_buffer || _pg_pixel_buffer_cap < needed) {
+    _pg_pixel_buffer = (Color *)realloc(_pg_pixel_buffer, (size_t)needed * sizeof(Color));
+    _pg_pixel_buffer_cap = needed;
+  }
+  _pde_arr_register(_pg_pixel_buffer, (size_t)needed, sizeof(Color));
+  return (uint32_t *)_pg_pixel_buffer;
+}
+
+static inline void _pg_updatePixels(RenderTexture2D *rt) {
+  if (!_pg_pixel_buffer) return;
+  int w = rt->texture.width;
+  int h = rt->texture.height;
+  Image img = {
+    .data = _pg_pixel_buffer,
+    .width = w,
+    .height = h,
+    .mipmaps = 1,
+    .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8
+  };
+  ImageFlipVertical(&img);
+  UpdateTexture(rt->texture, img.data);
+}
 
 // pixels[] aliases the RGBA8 buffer directly: uint32 little-endian view of
 // R8G8B8A8 bytes equals the pack_color ABGR layout used everywhere else
-static inline uint32_t *pimage_loadPixels(PImage *img) {
+static inline uint32_t *_pim_loadPixels(PImage *img) {
+  if (img && img->data)
+    _pde_arr_register(img->data, (size_t)(img->width * img->height), sizeof(uint32_t));
   return (uint32_t *)img->data;
 }
-static inline uint32_t *pimage_pixels(PImage *img) {
+static inline uint32_t *_pim_pixels(PImage *img) {
+  if (img && img->data)
+    _pde_arr_register(img->data, (size_t)(img->width * img->height), sizeof(uint32_t));
   return (uint32_t *)img->data;
 }
-static inline void pimage_updatePixels(PImage *img) {
+static inline void _pim_updatePixels(PImage *img) {
   _pimage_invalidate(img->data); // redraw re-uploads mutated pixels
 }
+
+#define pimage_loadPixels(A) _Generic((A), \
+    PImage *: _pim_loadPixels, \
+    RenderTexture2D *: _pg_loadPixels)(A)
+
+#define pimage_pixels(A) _Generic((A), \
+    PImage *: _pim_pixels, \
+    RenderTexture2D *: _pg_pixels)(A)
+
+#define pimage_updatePixels(A) _Generic((A), \
+    PImage *: _pim_updatePixels, \
+    RenderTexture2D *: _pg_updatePixels)(A)
 
 static inline void pimage_resize(PImage *img, int w, int h) {
   _pimage_invalidate(img->data);
@@ -2273,7 +2525,11 @@ static inline void pimage_resize(PImage *img, int w, int h) {
   ImageFormat(img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
 }
 
-static void pimage_filter(PImage *img, int kind, float arg) {
+static inline void _pimage_filter_pgraphics(RenderTexture2D *rt, int kind, float arg) {
+  (void)rt; (void)kind; (void)arg;
+}
+
+static void _pimage_filter_pimage(PImage *img, int kind, float arg) {
   if (img->format != PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 || img->data == NULL) return;
   _pimage_invalidate(img->data);
   int n = img->width * img->height;
@@ -2309,6 +2565,56 @@ static void pimage_filter(PImage *img, int kind, float arg) {
     case _PIMAGE_OPAQUE:
       for (int i = 0; i < n; i++) px[i*4+3] = 255;
       break;
+    case _PIMAGE_ERODE: {
+      uint8_t *tmp = (uint8_t *)MemAlloc((size_t)n * 4);
+      memcpy(tmp, px, (size_t)n * 4);
+      for (int y = 0; y < img->height; y++) {
+        for (int x = 0; x < img->width; x++) {
+          int minR = 255, minG = 255, minB = 255;
+          for (int dy = -1; dy <= 1; dy++) {
+            int ny = y + dy;
+            if (ny < 0 || ny >= img->height) continue;
+            for (int dx = -1; dx <= 1; dx++) {
+              int nx = x + dx;
+              if (nx < 0 || nx >= img->width) continue;
+              int idx = (ny * img->width + nx) * 4;
+              if (tmp[idx] < minR) minR = tmp[idx];
+              if (tmp[idx+1] < minG) minG = tmp[idx+1];
+              if (tmp[idx+2] < minB) minB = tmp[idx+2];
+            }
+          }
+          int outIdx = (y * img->width + x) * 4;
+          px[outIdx] = minR; px[outIdx+1] = minG; px[outIdx+2] = minB;
+        }
+      }
+      MemFree(tmp);
+      break;
+    }
+    case _PIMAGE_DILATE: {
+      uint8_t *tmp = (uint8_t *)MemAlloc((size_t)n * 4);
+      memcpy(tmp, px, (size_t)n * 4);
+      for (int y = 0; y < img->height; y++) {
+        for (int x = 0; x < img->width; x++) {
+          int maxR = 0, maxG = 0, maxB = 0;
+          for (int dy = -1; dy <= 1; dy++) {
+            int ny = y + dy;
+            if (ny < 0 || ny >= img->height) continue;
+            for (int dx = -1; dx <= 1; dx++) {
+              int nx = x + dx;
+              if (nx < 0 || nx >= img->width) continue;
+              int idx = (ny * img->width + nx) * 4;
+              if (tmp[idx] > maxR) maxR = tmp[idx];
+              if (tmp[idx+1] > maxG) maxG = tmp[idx+1];
+              if (tmp[idx+2] > maxB) maxB = tmp[idx+2];
+            }
+          }
+          int outIdx = (y * img->width + x) * 4;
+          px[outIdx] = maxR; px[outIdx+1] = maxG; px[outIdx+2] = maxB;
+        }
+      }
+      MemFree(tmp);
+      break;
+    }
     case _PIMAGE_BLUR: {
       // box blur, radius from arg (default 1), three passes approximate gaussian
       int r = (arg < 1.0f) ? 1 : (int)arg;
@@ -2337,6 +2643,11 @@ static void pimage_filter(PImage *img, int kind, float arg) {
       break;
   }
 }
+
+#define pimage_filter(target, kind, arg) _Generic((target), \
+  RenderTexture2D *: _pimage_filter_pgraphics, \
+  default: _pimage_filter_pimage \
+)((target), (kind), (arg))
 
 static inline void pimage_mask(PImage *img, PImage *src) {
   if (img->width != src->width || img->height != src->height ||
