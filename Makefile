@@ -30,7 +30,7 @@ test:
 	gcc tests/test_math.c -o tests/test_math -I. $(shell ./pdedeps --includes) \
 		$(shell ./pdedeps --libs) && ./tests/test_math
 	gcc tests/test_libraries_data.c -I. -Wall -Wextra -o tests/test_libraries_data && ./tests/test_libraries_data
-	gcc tests/test_libraries_media.c -I. -I/usr/include/freetype2 -Wall -Wextra -lraylib -o tests/test_libraries_media && ./tests/test_libraries_media
+	gcc tests/test_libraries_media.c -I. -I/usr/include/freetype2 -Wall -Wextra -lraylib -lm -lpthread -ldl -o tests/test_libraries_media && ./tests/test_libraries_media
 
 clean:
 	rm -f pdeide sketch tests/test_editor tests/test_math tests/test_libraries_data tests/test_libraries_media *.o *.gch
