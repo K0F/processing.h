@@ -31,4 +31,4 @@ test:
 		$(shell ./pdedeps --libs) && ./tests/test_math
 
 clean:
-	rm -f pdeide sketch tests/test_editor tests/test_math *.o
+	rm -f pdeide sketch tests/test_editor tests/test_math *.o *.gch

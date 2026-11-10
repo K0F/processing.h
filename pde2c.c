@@ -46,10 +46,20 @@ bool is_type_token(Token t) {
   if (t.type == TOKEN_KEYWORD &&
       (strcmp(t.text, "int") == 0 || strcmp(t.text, "float") == 0 ||
        strcmp(t.text, "char") == 0 || strcmp(t.text, "double") == 0 ||
-       strcmp(t.text, "byte") == 0 ||
+       strcmp(t.text, "byte") == 0 || strcmp(t.text, "long") == 0 ||
+       strcmp(t.text, "short") == 0 ||
        strcmp(t.text, "boolean") == 0 || strcmp(t.text, "color") == 0))
     return true;
-  if (t.type == TOKEN_IDENTIFIER && is_class_name(t.text)) return true;
+  if (t.type == TOKEN_IDENTIFIER) {
+    if (strcmp(t.text, "PImage") == 0 || strcmp(t.text, "PVector") == 0 ||
+        strcmp(t.text, "String") == 0 || strcmp(t.text, "PGraphics") == 0 ||
+        strcmp(t.text, "PFont") == 0 || strcmp(t.text, "Object") == 0 ||
+        strcmp(t.text, "ArrayList") == 0 ||
+        strcmp(t.text, "AudioStream") == 0 || strcmp(t.text, "SineWave") == 0 ||
+        strcmp(t.text, "FadeOut") == 0 || strcmp(t.text, "FadeIn") == 0)
+      return true;
+    if (is_class_name(t.text)) return true;
+  }
   return false;
 }
 
@@ -257,9 +267,27 @@ static bool tok_is_str_literal(const Token *t) {
   return t->type == TOKEN_STRING && t->text[0] != '\'';
 }
 
+static bool is_pde_builtin_non_string(const char *name) {
+  static const char *builtins[] = {
+    "mouseButton", "mouseX", "mouseY", "pmouseX", "pmouseY", "mouseWheelDelta",
+    "width", "height", "displayWidth", "displayHeight", "frameCount", "frameRate",
+    "key", "keyCode", "keyPressed", "mousePressed",
+    "LEFT", "RIGHT", "CENTER", "UP", "DOWN",
+    "PI", "HALF_PI", "TWO_PI", "QUARTER_PI", "DEG_TO_RAD", "RAD_TO_DEG",
+    "RGB", "HSB", "ARGB", "ALPHA", "OPENGL", "P2D", "P3D", "JAVA2D", "PDF",
+    "CORNER", "CORNERS", "RADIUS", "CLOSE", "POINTS", "LINES", "TRIANGLES", "QUADS",
+    NULL
+  };
+  for (int i = 0; builtins[i]; i++) {
+    if (strcmp(name, builtins[i]) == 0) return true;
+  }
+  return false;
+}
+
 // Is a symbol's recorded type a non-string type (primitive or user class)?
 // Used to avoid over-rewriting method calls on int/class receivers.
 static bool symbol_type_non_string(const char *name) {
+  if (is_pde_builtin_non_string(name)) return true;
   const char *ct = symbol_type(name);
   if (!ct) return false;                  // unknown: be lenient (String-like)
   if (strcmp(ct, "const char *") == 0 || strcmp(ct, "char *") == 0) return false;
@@ -290,7 +318,10 @@ static bool receiver_is_string(Token *t, int i) {
   if (t[j].type != TOKEN_IDENTIFIER) return false;
   if (strcmp(t[j].text, "_pde_cat") == 0 || strcmp(t[j].text, "_pde_charat") == 0 ||
       strcmp(t[j].text, "_pde_numf") == 0 || strcmp(t[j].text, "str") == 0 ||
-      strcmp(t[j].text, "trim") == 0 || strncmp(t[j].text, "_pde_str_", 9) == 0)
+      strcmp(t[j].text, "trim") == 0 || strncmp(t[j].text, "_pde_str_", 9) == 0 ||
+      strcmp(t[j].text, "nf") == 0 || strcmp(t[j].text, "nfc") == 0 ||
+      strcmp(t[j].text, "nfp") == 0 || strcmp(t[j].text, "nfs") == 0 ||
+      strcmp(t[j].text, "hex") == 0 || strcmp(t[j].text, "binary") == 0)
     return true;
   // String-typed, or unknown (lenient: nothing rules out a String).
   return !symbol_type_non_string(t[j].text);
@@ -311,8 +342,7 @@ static int receiver_start(Token *t, int i) {
       }
       else if (depth == 0 && (strcmp(s, ",") == 0 || strcmp(s, ";") == 0 ||
                strcmp(s, "{") == 0 || strcmp(s, "}") == 0)) break;
-    } else if (t[j].type == TOKEN_OPERATOR && depth == 0 &&
-               (strcmp(s, "=") == 0 || strcmp(s, "==") == 0 || strcmp(s, "+=") == 0))
+    } else if (t[j].type == TOKEN_OPERATOR && depth == 0)
       break;
     j--;
   }
@@ -435,7 +465,10 @@ static bool range_is_string(Token *t, int start, int end) {
       const char *nm = t[start].text;
       if (strcmp(nm, "_pde_cat") == 0 || strcmp(nm, "_pde_charat") == 0 ||
           strcmp(nm, "_pde_numf") == 0 || strcmp(nm, "str") == 0 ||
-          strcmp(nm, "trim") == 0 || strncmp(nm, "_pde_str_", 9) == 0) {
+          strcmp(nm, "trim") == 0 || strncmp(nm, "_pde_str_", 9) == 0 ||
+          strcmp(nm, "nf") == 0 || strcmp(nm, "nfc") == 0 ||
+          strcmp(nm, "nfp") == 0 || strcmp(nm, "nfs") == 0 ||
+          strcmp(nm, "hex") == 0 || strcmp(nm, "binary") == 0) {
         if (strcmp(t[start+1].text, "(") == 0) return true;
       }
     }
@@ -448,6 +481,162 @@ static bool range_is_string(Token *t, int start, int end) {
     return true;
   if (symbol_type_non_string(t[start].text)) return false; // primitive/class
   return true; // String-typed or unknown
+}
+
+int rewrite_array_length(Token *tokens, int num_tokens, Token **out_tokens) {
+  Token *out = malloc(sizeof(Token) * (num_tokens * 2 + 64));
+  int o = 0;
+  for (int i = 0; i < num_tokens; i++) {
+    // Match: [receiver tokens] . length [NOT followed by '(']
+    if (i + 1 < num_tokens &&
+        tokens[i].type == TOKEN_DOT &&
+        tokens[i+1].type == TOKEN_IDENTIFIER &&
+        strcmp(tokens[i+1].text, "length") == 0 &&
+        !(i + 2 < num_tokens && tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "(") == 0)) {
+      Token anchor = tokens[i];
+      #define PDE_EMIT_AL(txt, typ) do { Token mk = anchor; \
+          snprintf(mk.text, MAX_TOKEN_TEXT, "%s", txt); mk.type = typ; out[o++] = mk; } while (0)
+
+      if (i > 0 && tokens[i-1].type == TOKEN_IDENTIFIER && strcmp(tokens[i-1].text, "pixels") == 0) {
+        if (i >= 2 && tokens[i-2].type == TOKEN_DOT) {
+          int img_ls = receiver_start(tokens, i - 3);
+          o -= (i - img_ls);
+          PDE_EMIT_AL("(", TOKEN_SYMBOL);
+          PDE_EMIT_AL("(", TOKEN_SYMBOL);
+          for (int q = img_ls; q < i - 2; q++) out[o++] = tokens[q];
+          PDE_EMIT_AL(")", TOKEN_SYMBOL);
+          PDE_EMIT_AL(".", TOKEN_DOT);
+          PDE_EMIT_AL("width", TOKEN_IDENTIFIER);
+          PDE_EMIT_AL("*", TOKEN_SYMBOL);
+          PDE_EMIT_AL("(", TOKEN_SYMBOL);
+          for (int q = img_ls; q < i - 2; q++) out[o++] = tokens[q];
+          PDE_EMIT_AL(")", TOKEN_SYMBOL);
+          PDE_EMIT_AL(".", TOKEN_DOT);
+          PDE_EMIT_AL("height", TOKEN_IDENTIFIER);
+          PDE_EMIT_AL(")", TOKEN_SYMBOL);
+          i += 1;
+          continue;
+        } else {
+          o -= 1;
+          PDE_EMIT_AL("(", TOKEN_SYMBOL);
+          PDE_EMIT_AL("width", TOKEN_IDENTIFIER);
+          PDE_EMIT_AL("*", TOKEN_SYMBOL);
+          PDE_EMIT_AL("height", TOKEN_IDENTIFIER);
+          PDE_EMIT_AL(")", TOKEN_SYMBOL);
+          i += 1;
+          continue;
+        }
+      }
+
+      int ls = receiver_start(tokens, i - 1);
+      // Rewind out by the length of the already-emitted receiver: (i - ls)
+      o -= (i - ls);
+      PDE_EMIT_AL("_pde_len", TOKEN_IDENTIFIER);
+      PDE_EMIT_AL("(", TOKEN_SYMBOL);
+      for (int q = ls; q < i; q++) out[o++] = tokens[q];
+      PDE_EMIT_AL(")", TOKEN_SYMBOL);
+      #undef PDE_EMIT_AL
+      i += 1; // skip '.' and 'length'
+      continue;
+    }
+    out[o++] = tokens[i];
+  }
+  *out_tokens = out;
+  return o;
+}
+
+int rewrite_pvector_accessors(Token *tokens, int num_tokens, Token **out_tokens) {
+  Token *out = malloc(sizeof(Token) * (num_tokens * 2 + 64));
+  int o = 0;
+  for (int i = 0; i < num_tokens; i++) {
+    // Match: [receiver] . (mag | magSq | heading | copy) ( )
+    if (i + 3 < num_tokens &&
+        tokens[i].type == TOKEN_DOT &&
+        tokens[i+1].type == TOKEN_IDENTIFIER &&
+        (strcmp(tokens[i+1].text, "mag") == 0 ||
+         strcmp(tokens[i+1].text, "magSq") == 0 ||
+         strcmp(tokens[i+1].text, "heading") == 0 ||
+         strcmp(tokens[i+1].text, "copy") == 0) &&
+        tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "(") == 0 &&
+        tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, ")") == 0) {
+      int ls = receiver_start(tokens, i - 1);
+      // Rewind out by the length of the already-emitted receiver: (i - ls)
+      o -= (i - ls);
+      Token anchor = tokens[i];
+      #define PDE_EMIT_PV(txt, typ) do { Token mk = anchor; \
+          snprintf(mk.text, MAX_TOKEN_TEXT, "%s", txt); mk.type = typ; out[o++] = mk; } while (0)
+      char fnName[MAX_TOKEN_TEXT];
+      snprintf(fnName, sizeof(fnName), "pvector_%s", tokens[i+1].text);
+      PDE_EMIT_PV(fnName, TOKEN_IDENTIFIER);
+      PDE_EMIT_PV("(", TOKEN_SYMBOL);
+      for (int q = ls; q < i; q++) out[o++] = tokens[q];
+      PDE_EMIT_PV(")", TOKEN_SYMBOL);
+      #undef PDE_EMIT_PV
+      i += 3; // skip '.', method, '(', ')'
+      continue;
+    }
+    out[o++] = tokens[i];
+  }
+  *out_tokens = out;
+  return o;
+}
+
+int rewrite_gl_calls(Token *tokens, int num_tokens, Token **out_tokens) {
+  Token *out = malloc(sizeof(Token) * (num_tokens * 2 + 64));
+  int o = 0;
+  for (int i = 0; i < num_tokens; i++) {
+    // 1. Strip `gl.` or `GL.` before standard OpenGL functions (starts with "gl") or constants ("GL_")
+    if (i + 2 < num_tokens &&
+        (strcmp(tokens[i].text, "gl") == 0 || strcmp(tokens[i].text, "GL") == 0) &&
+        tokens[i+1].type == TOKEN_DOT &&
+        tokens[i+2].type == TOKEN_IDENTIFIER &&
+        (strncmp(tokens[i+2].text, "gl", 2) == 0 || strncmp(tokens[i+2].text, "GL_", 3) == 0)) {
+      i++; // skips tokens[i] (which was gl/GL) and moves to dot
+      continue;
+    }
+    // 2. Rewrite `X.beginGL()` -> `_pde_pgl_beginGL()`
+    if (i + 4 < num_tokens &&
+        tokens[i+1].type == TOKEN_DOT &&
+        strcmp(tokens[i+2].text, "beginGL") == 0 &&
+        tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "(") == 0 &&
+        tokens[i+4].type == TOKEN_SYMBOL && strcmp(tokens[i+4].text, ")") == 0) {
+      Token fn = tokens[i+2];
+      snprintf(fn.text, MAX_TOKEN_TEXT, "_pde_pgl_beginGL");
+      out[o++] = fn;
+      out[o++] = tokens[i+3]; // (
+      out[o++] = tokens[i+4]; // )
+      i += 4;
+      continue;
+    }
+    // 3. Rewrite `X.endGL()` -> `_pde_pgl_endGL()`
+    if (i + 4 < num_tokens &&
+        tokens[i+1].type == TOKEN_DOT &&
+        strcmp(tokens[i+2].text, "endGL") == 0 &&
+        tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "(") == 0 &&
+        tokens[i+4].type == TOKEN_SYMBOL && strcmp(tokens[i+4].text, ")") == 0) {
+      Token fn = tokens[i+2];
+      snprintf(fn.text, MAX_TOKEN_TEXT, "_pde_pgl_endGL");
+      out[o++] = fn;
+      out[o++] = tokens[i+3]; // (
+      out[o++] = tokens[i+4]; // )
+      i += 4;
+      continue;
+    }
+    // 4. Rewrite `X.setSwapInterval(...)` -> `_pde_gl_setSwapInterval(...)`
+    if (i + 3 < num_tokens &&
+        tokens[i+1].type == TOKEN_DOT &&
+        strcmp(tokens[i+2].text, "setSwapInterval") == 0 &&
+        tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "(") == 0) {
+      Token fn = tokens[i+2];
+      snprintf(fn.text, MAX_TOKEN_TEXT, "_pde_gl_setSwapInterval");
+      out[o++] = fn;
+      i += 2; // skip receiver and dot; loop will process `(` and args next
+      continue;
+    }
+    out[o++] = tokens[i];
+  }
+  *out_tokens = out;
+  return o;
 }
 
 // Rewrite `s += expr` -> `s = _pde_cat(s, (expr))` for String-typed LHS so the
@@ -472,6 +661,12 @@ int rewrite_str_assign(Token *tokens, int num_tokens, Token **out_tokens) {
     int rhsS = i + 2;
     int rhsE = rhs_end(tokens, num_tokens, rhsS);
     bool rhsStr = range_is_string(tokens, rhsS, rhsE);
+    const char *ct = symbol_type(tokens[i].text);
+    bool lhsKnownStr = (ct && (strcmp(ct, "const char *") == 0 || strcmp(ct, "char *") == 0 || strcmp(ct, "String") == 0));
+    if (!lhsKnownStr && !rhsStr) {
+      out[o++] = tokens[i];
+      continue;
+    }
     Token anchor = tokens[i];
     #define PDE_EMIT_AS(txt, typ) do { Token mk = anchor; \
         snprintf(mk.text, MAX_TOKEN_TEXT, "%s", txt); mk.type = typ; out[o++] = mk; } while (0)
@@ -497,6 +692,19 @@ int rewrite_str_assign(Token *tokens, int num_tokens, Token **out_tokens) {
   return o;
 }
 
+static bool range_is_definitely_string(Token *t, int start, int end) {
+  if (end <= start) return false;
+  if (t[start].type == TOKEN_STRING) return t[start].text[0] != '\'';
+  if (t[start].type != TOKEN_IDENTIFIER) return false;
+  const char *ct = symbol_type(t[start].text);
+  if (ct && (strcmp(ct, "const char *") == 0 || strcmp(ct, "char *") == 0 || strcmp(ct, "String") == 0))
+    return true;
+  if (strncmp(t[start].text, "_pde_str_", 9) == 0 ||
+      strcmp(t[start].text, "str") == 0 || strcmp(t[start].text, "trim") == 0)
+    return true;
+  return false;
+}
+
 // Rewrite `a == b` / `a != b` -> `_pde_str_eq(a, b)` / `!_pde_str_eq(a, b)`
 // when both operands are single-token Strings, so Java String equality
 // semantics hold (C would otherwise compare pointers).
@@ -510,7 +718,7 @@ int rewrite_str_cmp(Token *tokens, int num_tokens, Token **out_tokens) {
       int ls = receiver_start(tokens, i - 1);
       bool lStr = range_is_string(tokens, ls, i);
       bool rStr = range_is_string(tokens, i + 1, i + 2);
-      if (lStr && rStr) {
+      if (lStr && rStr && (range_is_definitely_string(tokens, ls, i) || range_is_definitely_string(tokens, i + 1, i + 2))) {
         o -= (i - ls); // drop the already-emitted left operand from output tail
         Token anchor = tokens[i];
         #define PDE_EMIT_AE(txt, typ) do { Token mk = anchor; \
@@ -556,17 +764,28 @@ static int concat_operand_end(Token *t, int n, int start) {
   return j;
 }
 
-// does the operand evaluate to a string? (string literal or _pde_charat call)
+// does the operand evaluate to a string?
 static bool concat_operand_stringy(Token *t, int start, int end) {
   for (int j = start; j < end; j++) {
-    if (t[j].type == TOKEN_STRING) return true;
-    if (t[j].type == TOKEN_IDENTIFIER && strcmp(t[j].text, "_pde_charat") == 0) return true;
-    if (t[j].type == TOKEN_IDENTIFIER && strcmp(t[j].text, "str") == 0) return true;
+    if (t[j].type == TOKEN_STRING && t[j].text[0] != '\'') return true;
+    if (t[j].type == TOKEN_IDENTIFIER) {
+      const char *s = t[j].text;
+      if (strcmp(s, "_pde_charat") == 0 || strcmp(s, "str") == 0 ||
+          strcmp(s, "nf") == 0 || strcmp(s, "nfc") == 0 ||
+          strcmp(s, "nfp") == 0 || strcmp(s, "nfs") == 0 ||
+          strcmp(s, "hex") == 0 || strcmp(s, "binary") == 0 ||
+          strcmp(s, "trim") == 0 || strcmp(s, "sketchPath") == 0 ||
+          strcmp(s, "dataPath") == 0)
+        return true;
+      const char *ct = symbol_type(s);
+      if (ct && (strcmp(ct, "const char *") == 0 || strcmp(ct, "char *") == 0 || strcmp(ct, "String") == 0))
+        return true;
+    }
   }
   return false;
 }
 
-// Fold "lit" + a + "b" chains into _pde_cat(...) calls. Right-assoc nesting
+// Fold expr + "lit" + expr chains into _pde_cat(...) calls. Right-assoc nesting
 // (concatenation is associative). Numeric operands are wrapped in
 // _pde_numf(...); string-valued operands pass through untouched.
 int rewrite_concat(Token *tokens, int num_tokens, Token **out_tokens) {
@@ -574,61 +793,93 @@ int rewrite_concat(Token *tokens, int num_tokens, Token **out_tokens) {
   int o = 0;
   int i = 0;
   while (i < num_tokens) {
-    if (!(tokens[i].type == TOKEN_STRING && i + 1 < num_tokens &&
-          tokens[i+1].type == TOKEN_OPERATOR &&
-          strcmp(tokens[i+1].text, "+") == 0)) {
+    if (i > 0 && tokens[i-1].type == TOKEN_DOT) {
+      out[o++] = tokens[i++];
+      continue;
+    }
+    if (tokens[i].type == TOKEN_SYMBOL &&
+        (strcmp(tokens[i].text, ";") == 0 || strcmp(tokens[i].text, ",") == 0 ||
+         strcmp(tokens[i].text, ")") == 0 || strcmp(tokens[i].text, "]") == 0 ||
+         strcmp(tokens[i].text, "}") == 0 || strcmp(tokens[i].text, "{") == 0)) {
+      out[o++] = tokens[i++];
+      continue;
+    }
+    if (tokens[i].type == TOKEN_KEYWORD &&
+        (strcmp(tokens[i].text, "return") == 0 || strcmp(tokens[i].text, "if") == 0 ||
+         strcmp(tokens[i].text, "while") == 0 || strcmp(tokens[i].text, "for") == 0 ||
+         strcmp(tokens[i].text, "else") == 0 || strcmp(tokens[i].text, "case") == 0 ||
+         strcmp(tokens[i].text, "switch") == 0 || strcmp(tokens[i].text, "break") == 0 ||
+         strcmp(tokens[i].text, "continue") == 0)) {
       out[o++] = tokens[i++];
       continue;
     }
 
-    // collect chain segments: seg 0 is the leading string literal
-    int segStart[64], segEnd[64];
-    bool segStr[64];
-    int m = 0;
-    segStart[m] = i; segEnd[m] = i + 1; segStr[m] = true; m++;
-    int j = i + 1;
-    while (j < num_tokens && tokens[j].type == TOKEN_OPERATOR &&
-           strcmp(tokens[j].text, "+") == 0 && m < 64) {
-      int s = j + 1;
-      int e = concat_operand_end(tokens, num_tokens, s);
-      if (e <= s) break;
-      segStart[m] = s; segEnd[m] = e;
-      segStr[m] = (e == s + 1 && tokens[s].type == TOKEN_STRING);
+    int s0 = i;
+    int e0 = concat_operand_end(tokens, num_tokens, s0);
+    if (e0 > s0 && e0 < num_tokens && tokens[e0].type == TOKEN_OPERATOR &&
+        strcmp(tokens[e0].text, "+") == 0) {
+      int segStart[64], segEnd[64];
+      bool segStr[64];
+      int m = 0;
+      segStart[m] = s0; segEnd[m] = e0;
+      segStr[m] = concat_operand_stringy(tokens, s0, e0);
       m++;
-      j = e;
-    }
 
-    Token anchor = tokens[i]; // line/fileId donor
-    #define PDE_EMIT(txt, typ) { \
-      Token mk = anchor; \
-      snprintf(mk.text, MAX_TOKEN_TEXT, "%s", txt); \
-      mk.type = typ; \
-      out[o++] = mk; \
-    }
-    #define PDE_COPYRANGE(a, b) { \
-      for (int q = (a); q < (b); q++) out[o++] = tokens[q]; \
-    }
+      int j = e0;
+      while (j < num_tokens && tokens[j].type == TOKEN_OPERATOR &&
+             strcmp(tokens[j].text, "+") == 0 && m < 64) {
+        int s = j + 1;
+        int e = concat_operand_end(tokens, num_tokens, s);
+        if (e <= s) break;
+        segStart[m] = s; segEnd[m] = e;
+        segStr[m] = concat_operand_stringy(tokens, s, e);
+        m++;
+        j = e;
+      }
 
-    PDE_EMIT("_pde_cat", TOKEN_IDENTIFIER);
-    PDE_EMIT("(", TOKEN_SYMBOL);
-    PDE_COPYRANGE(segStart[0], segEnd[0]);
-    for (int k = 1; k < m; k++) {
-      PDE_EMIT(",", TOKEN_SYMBOL);
-      if (k < m - 1) { PDE_EMIT("_pde_cat", TOKEN_IDENTIFIER); PDE_EMIT("(", TOKEN_SYMBOL); }
-      if (segStr[k]) {
-        PDE_COPYRANGE(segStart[k], segEnd[k]);
-      } else {
-        PDE_EMIT("_pde_numf", TOKEN_IDENTIFIER);
+      bool anyStr = false;
+      for (int k = 0; k < m; k++) {
+        if (segStr[k]) { anyStr = true; break; }
+      }
+
+      if (anyStr && m >= 2) {
+        Token anchor = tokens[i]; // line/fileId donor
+        #define PDE_EMIT(txt, typ) { \
+          Token mk = anchor; \
+          snprintf(mk.text, MAX_TOKEN_TEXT, "%s", txt); \
+          mk.type = typ; \
+          out[o++] = mk; \
+        }
+        #define PDE_COPYRANGE(a, b) { \
+          for (int q = (a); q < (b); q++) out[o++] = tokens[q]; \
+        }
+
+        PDE_EMIT("_pde_cat", TOKEN_IDENTIFIER);
         PDE_EMIT("(", TOKEN_SYMBOL);
-        PDE_COPYRANGE(segStart[k], segEnd[k]);
-        PDE_EMIT(")", TOKEN_SYMBOL);
+        for (int k = 0; k < m; k++) {
+          if (k > 0) {
+            PDE_EMIT(",", TOKEN_SYMBOL);
+            if (k < m - 1) { PDE_EMIT("_pde_cat", TOKEN_IDENTIFIER); PDE_EMIT("(", TOKEN_SYMBOL); }
+          }
+          if (segStr[k]) {
+            PDE_COPYRANGE(segStart[k], segEnd[k]);
+          } else {
+            PDE_EMIT("_pde_numf", TOKEN_IDENTIFIER);
+            PDE_EMIT("(", TOKEN_SYMBOL);
+            PDE_COPYRANGE(segStart[k], segEnd[k]);
+            PDE_EMIT(")", TOKEN_SYMBOL);
+          }
+        }
+        for (int k = 0; k < m - 1; k++) PDE_EMIT(")", TOKEN_SYMBOL);
+        #undef PDE_EMIT
+        #undef PDE_COPYRANGE
+
+        i = j;
+        continue;
       }
     }
-    for (int k = 0; k < m - 1; k++) PDE_EMIT(")", TOKEN_SYMBOL);
-    #undef PDE_EMIT
-    #undef PDE_COPYRANGE
 
-    i = j;
+    out[o++] = tokens[i++];
   }
   *out_tokens = out;
   return o;
@@ -672,7 +923,9 @@ typedef struct {
   Token *body;                     // copy of the body tokens (excl. braces)
   int nbody;
   char locals[MAX_LOCALS][MAX_TOKEN_TEXT];
+  char local_types[MAX_LOCALS][MAX_TOKEN_TEXT];
   int nlocals;
+  int nparams;
 } ClassMethod;
 
 typedef struct {
@@ -738,6 +991,24 @@ static bool is_ag_method(const char *name) {
          strcmp(name, "remove") == 0 || strcmp(name, "clear") == 0;
 }
 
+static bool is_builtin_ctor_class(const char *name) {
+  return strcmp(name, "Object") == 0 ||
+         strcmp(name, "PeasyCam") == 0 ||
+         strcmp(name, "Minim") == 0 ||
+         strcmp(name, "AudioPlayer") == 0 ||
+         strcmp(name, "AudioInput") == 0 ||
+         strcmp(name, "AudioSnippet") == 0 ||
+         strcmp(name, "AudioOutput") == 0 ||
+         strcmp(name, "AudioStream") == 0 ||
+         strcmp(name, "SineWave") == 0 ||
+         strcmp(name, "FadeOut") == 0 ||
+         strcmp(name, "FadeIn") == 0 ||
+         strcmp(name, "FullScreen") == 0 ||
+         strcmp(name, "GSMovieMaker") == 0 ||
+         strcmp(name, "MovieMaker") == 0 ||
+         strcmp(name, "PMatrix3D") == 0;
+}
+
 static bool is_plausible_type_token(Token t) {
   if (t.type == TOKEN_KEYWORD) {
     return strcmp(t.text, "int") == 0 || strcmp(t.text, "float") == 0 ||
@@ -748,7 +1019,13 @@ static bool is_plausible_type_token(Token t) {
   if (t.type != TOKEN_IDENTIFIER) return false;
   if (strcmp(t.text, "PVector") == 0 || strcmp(t.text, "String") == 0 ||
       strcmp(t.text, "ArrayList") == 0 || strcmp(t.text, "PImage") == 0 ||
-      strcmp(t.text, "Object") == 0)
+      strcmp(t.text, "PGraphics") == 0 || strcmp(t.text, "PFont") == 0 ||
+      strcmp(t.text, "Object") == 0 || strcmp(t.text, "PeasyCam") == 0 ||
+      strcmp(t.text, "Minim") == 0 || strcmp(t.text, "AudioPlayer") == 0 ||
+      strcmp(t.text, "AudioInput") == 0 || strcmp(t.text, "AudioSnippet") == 0 ||
+      strcmp(t.text, "AudioOutput") == 0 || strcmp(t.text, "SineWave") == 0 ||
+      strcmp(t.text, "FullScreen") == 0 || strcmp(t.text, "GSMovieMaker") == 0 ||
+      strcmp(t.text, "MovieMaker") == 0 || strcmp(t.text, "PMatrix3D") == 0)
     return true;
   return is_class_name(t.text);
 }
@@ -815,11 +1092,39 @@ static void collect_locals(Token *t, int start, int end, ClassMethod *m) {
                          strcmp(t[j + 1].text, "(") == 0) ||
                         (t[j + 1].type == TOKEN_DOT)))
       continue; // it's a call or member chain, not a declaration
-    if (m->nlocals < MAX_LOCALS)
-      snprintf(m->locals[m->nlocals++], MAX_TOKEN_TEXT, "%s", t[j].text);
     char mtype[MAX_TOKEN_TEXT];
     snprintf(mtype, sizeof(mtype), "%s", emit_c_type_str(t[i].text));
+    if (m->nlocals < MAX_LOCALS) {
+      snprintf(m->locals[m->nlocals], MAX_TOKEN_TEXT, "%s", t[j].text);
+      snprintf(m->local_types[m->nlocals], MAX_TOKEN_TEXT, "%s", mtype);
+      m->nlocals++;
+    }
     reg_sym_typed(t[j].text, mtype);
+    int cur_j = j;
+    while (cur_j < end) {
+      while (cur_j < end && !(t[cur_j].type == TOKEN_SYMBOL &&
+             (strcmp(t[cur_j].text, ",") == 0 || strcmp(t[cur_j].text, ";") == 0))) {
+        if (t[cur_j].type == TOKEN_SYMBOL && (strcmp(t[cur_j].text, "(") == 0 || strcmp(t[cur_j].text, "[") == 0)) {
+          int cl = matching_close(t, end, cur_j, t[cur_j].text, strcmp(t[cur_j].text, "(") == 0 ? ")" : "]");
+          if (cl > cur_j) { cur_j = cl + 1; continue; }
+        }
+        cur_j++;
+      }
+      if (cur_j < end && t[cur_j].type == TOKEN_SYMBOL && strcmp(t[cur_j].text, ",") == 0) {
+        cur_j++;
+        while (cur_j < end && t[cur_j].type == TOKEN_SYMBOL && strcmp(t[cur_j].text, "*") == 0) cur_j++;
+        if (cur_j < end && t[cur_j].type == TOKEN_IDENTIFIER) {
+          if (m->nlocals < MAX_LOCALS) {
+            snprintf(m->locals[m->nlocals], MAX_TOKEN_TEXT, "%s", t[cur_j].text);
+            snprintf(m->local_types[m->nlocals], MAX_TOKEN_TEXT, "%s", mtype);
+            m->nlocals++;
+          }
+          reg_sym_typed(t[cur_j].text, mtype);
+        }
+      } else {
+        break;
+      }
+    }
     i = j;
   }
 }
@@ -830,6 +1135,7 @@ static void collect_locals(Token *t, int start, int end, ClassMethod *m) {
 static void parse_params(Token *t, int n, int sigOpen, int sigClose, ClassMethod *m) {
   size_t used = 0;
   m->params[0] = '\0';
+  m->nparams = 0;
   int i = sigOpen + 1;
   while (i < sigClose) {
     if (i >= n) break;
@@ -841,10 +1147,14 @@ static void parse_params(Token *t, int n, int sigOpen, int sigClose, ClassMethod
     if (i + 1 < sigClose && strcmp(t[i].text, "[") == 0 &&
         strcmp(t[i + 1].text, "]") == 0) { arr = true; i += 2; }
     if (i < sigClose && t[i].type == TOKEN_IDENTIFIER) {
-      if (m->nlocals < MAX_LOCALS)
-        snprintf(m->locals[m->nlocals++], MAX_TOKEN_TEXT, "%s", t[i].text);
+      m->nparams++;
       char ptype[MAX_TOKEN_TEXT];
       snprintf(ptype, sizeof(ptype), "%s%s", tymap, arr ? " *" : "");
+      if (m->nlocals < MAX_LOCALS) {
+        snprintf(m->locals[m->nlocals], MAX_TOKEN_TEXT, "%s", t[i].text);
+        snprintf(m->local_types[m->nlocals], MAX_TOKEN_TEXT, "%s", ptype);
+        m->nlocals++;
+      }
       reg_sym_typed(t[i].text, ptype);
       size_t wrote = snprintf(m->params + used, sizeof(m->params) - used,
                               "%s%s%s%s", used ? ", " : "",
@@ -862,7 +1172,19 @@ static void parse_params(Token *t, int n, int sigOpen, int sigClose, ClassMethod
 // Parse one `class NAME { ... }` starting at the "class" keyword token `kw`.
 // Called once per class before any token rewriting so _classes is complete.
 static void parse_class(Token *t, int n, int kw) {
-  ClassDef *c = &_classes[_nclasses++];
+  ClassDef *c = NULL;
+  for (int i = 0; i < _nclasses; i++) {
+    if (strcmp(_classes[i].name, t[kw + 1].text) == 0) {
+      c = &_classes[i];
+      break;
+    }
+  }
+  if (!c) {
+    if (_nclasses >= MAX_CLASSES) return;
+    c = &_classes[_nclasses++];
+    memset(c, 0, sizeof(*c));
+    snprintf(c->name, MAX_TOKEN_TEXT, "%s", t[kw + 1].text);
+  }
   c->nfields = 0;
   c->nmethods = 0;
   c->ctorIdx = -1;
@@ -886,11 +1208,12 @@ static void parse_class(Token *t, int n, int kw) {
                    strcmp(t[m + 1].text, "(") == 0);
     int nameTok = -1;
     int typeTok = m;
+    bool isArrayRet = false;
     if (!isCtor && is_plausible_type_token(tk) && m + 1 < c->classClose) {
       int j = m + 1;
       if (j + 1 < c->classClose && strcmp(t[j].text, "[") == 0 &&
-          strcmp(t[j + 1].text, "]") == 0) j += 2;
-      if (j < c->classClose && t[j].type == TOKEN_IDENTIFIER &&
+          strcmp(t[j + 1].text, "]") == 0) { j += 2; isArrayRet = true; }
+      if (j < c->classClose && (t[j].type == TOKEN_IDENTIFIER || strcmp(t[j].text, "draw") == 0 || strcmp(t[j].text, "setup") == 0) &&
           j + 1 < c->classClose && t[j + 1].type == TOKEN_SYMBOL &&
           strcmp(t[j + 1].text, "(") == 0) {
         nameTok = j;
@@ -909,7 +1232,10 @@ static void parse_class(Token *t, int n, int kw) {
         c->ctorIdx = c->nmethods;
       } else {
         snprintf(meth->name, MAX_TOKEN_TEXT, "%s", t[nameTok].text);
-        snprintf(meth->ret, MAX_TOKEN_TEXT, "%s", emit_c_type_str(t[typeTok].text));
+        if (isArrayRet)
+          snprintf(meth->ret, MAX_TOKEN_TEXT, "%s *", emit_c_type_str(t[typeTok].text));
+        else
+          snprintf(meth->ret, MAX_TOKEN_TEXT, "%s", emit_c_type_str(t[typeTok].text));
       }
       meth->sigOpen = openIdx;
       meth->sigClose = matching_close(t, n, openIdx, "(", ")");
@@ -917,7 +1243,10 @@ static void parse_class(Token *t, int n, int kw) {
       int bo = meth->sigClose + 1;
       // skip a trailing array return marker "[]" for "T f(...)[] {"
       if (bo + 1 < c->classClose && strcmp(t[bo].text, "[") == 0 &&
-          strcmp(t[bo + 1].text, "]") == 0) bo += 2;
+          strcmp(t[bo + 1].text, "]") == 0) {
+        bo += 2;
+        snprintf(meth->ret, MAX_TOKEN_TEXT, "%s *", emit_c_type_str(t[typeTok].text));
+      }
       if (bo < c->classClose && t[bo].type == TOKEN_SYMBOL &&
           strcmp(t[bo].text, "{") == 0) {
         meth->bodyOpen = bo;
@@ -1020,16 +1349,35 @@ static void parse_class(Token *t, int n, int kw) {
 
 // First pass: parse every class in file order (no token mutation).
 static void scan_classes(Token *t, int n) {
+  _nclasses = 0;
+  for (int i = 0; i < n; i++) {
+    if (t[i].type != TOKEN_IDENTIFIER || strcmp(t[i].text, "class") != 0) continue;
+    if (i + 1 >= n || t[i + 1].type != TOKEN_IDENTIFIER) continue;
+    if (_nclasses < MAX_CLASSES) {
+      memset(&_classes[_nclasses], 0, sizeof(_classes[_nclasses]));
+      snprintf(_classes[_nclasses].name, MAX_TOKEN_TEXT, "%s", t[i + 1].text);
+      _nclasses++;
+    }
+  }
+
   for (int i = 0; i < n; i++) {
     if (t[i].type != TOKEN_IDENTIFIER || strcmp(t[i].text, "class") != 0) continue;
     if (i + 1 >= n || t[i + 1].type != TOKEN_IDENTIFIER) continue;
     parse_class(t, n, i);
-    i = _classes[_nclasses - 1].classClose;
+    int closeIdx = -1;
+    for (int c = 0; c < _nclasses; c++) {
+      if (strcmp(_classes[c].name, t[i + 1].text) == 0) {
+        closeIdx = _classes[c].classClose;
+        break;
+      }
+    }
+    if (closeIdx > i) i = closeIdx;
   }
 }
 
 // Second pass: top-level (brace-depth 0) variable declarations are globals.
 static char _globnames[MAX_SYMBOLS][MAX_TOKEN_TEXT];
+static char _globtypes[MAX_SYMBOLS][MAX_TOKEN_TEXT];
 static int _nglob = 0;
 
 static bool is_global_name(const char *name) {
@@ -1043,7 +1391,7 @@ static void scan_globals(Token *t, int n) {
   for (int i = 0; i + 1 < n; i++) {
     Token tk = t[i];
     if (tk.type == TOKEN_KEYWORD && strcmp(tk.text, "void") == 0 &&
-        i + 1 < n && t[i + 1].type == TOKEN_IDENTIFIER &&
+        i + 1 < n && (t[i + 1].type == TOKEN_IDENTIFIER || strcmp(t[i + 1].text, "setup") == 0 || strcmp(t[i + 1].text, "draw") == 0) &&
         i + 2 < n && t[i + 2].type == TOKEN_SYMBOL &&
         strcmp(t[i + 2].text, "(") == 0) {
       // a function definition; skip through its matching '{ ... }' body so
@@ -1073,16 +1421,86 @@ static void scan_globals(Token *t, int n) {
     if (!is_plausible_type_token(tk)) continue;
     int j = i + 1;
     if (strcmp(tk.text, "ArrayList") == 0) j = skip_al_generics(t, n, i) + 1;
-    if (j + 1 < n && t[j].type == TOKEN_SYMBOL && strcmp(t[j].text, "[") == 0 &&
-        t[j + 1].type == TOKEN_SYMBOL && strcmp(t[j + 1].text, "]") == 0) j += 2;
+    while (j + 1 < n && t[j].type == TOKEN_SYMBOL && strcmp(t[j].text, "[") == 0 &&
+           t[j + 1].type == TOKEN_SYMBOL && strcmp(t[j + 1].text, "]") == 0) j += 2;
     if (t[j].type != TOKEN_IDENTIFIER) continue;
     if (j + 1 < n && t[j + 1].type == TOKEN_SYMBOL && strcmp(t[j + 1].text, "(") == 0) continue;
     if (j + 1 < n && t[j + 1].type == TOKEN_SYMBOL && strcmp(t[j + 1].text, "{") == 0) continue;
+    bool isArr = (j > i + 1);
+    int after_j = j + 1;
+    while (after_j + 1 < n && t[after_j].type == TOKEN_SYMBOL && strcmp(t[after_j].text, "[") == 0 &&
+           t[after_j + 1].type == TOKEN_SYMBOL && strcmp(t[after_j + 1].text, "]") == 0) {
+      isArr = true;
+      after_j += 2;
+    }
+    bool isBraceInit = false;
+    int eq = (isArr && after_j > j + 1) ? after_j : (j + 1);
+    while (eq < n && eq < j + 10 && !(t[eq].type == TOKEN_SYMBOL && strcmp(t[eq].text, ";") == 0)) {
+      if (t[eq].type == TOKEN_OPERATOR && strcmp(t[eq].text, "=") == 0 &&
+          eq + 1 < n && t[eq + 1].type == TOKEN_SYMBOL && strcmp(t[eq + 1].text, "{") == 0) {
+        isBraceInit = true;
+        break;
+      }
+      eq++;
+    }
     char gtype[MAX_TOKEN_TEXT];
-    snprintf(gtype, sizeof(gtype), "%s", emit_c_type_str(tk.text));
+    if (isBraceInit)
+      snprintf(gtype, sizeof(gtype), "%s []", emit_c_type_str(tk.text));
+    else
+      snprintf(gtype, sizeof(gtype), "%s%s", emit_c_type_str(tk.text), isArr ? " *" : "");
     reg_sym_typed(t[j].text, gtype);
-    if (_nglob < MAX_SYMBOLS)
-      snprintf(_globnames[_nglob++], MAX_TOKEN_TEXT, "%s", t[j].text);
+    if (_nglob < MAX_SYMBOLS) {
+      snprintf(_globnames[_nglob], MAX_TOKEN_TEXT, "%s", t[j].text);
+      snprintf(_globtypes[_nglob], MAX_TOKEN_TEXT, "%s", gtype);
+      _nglob++;
+    }
+    int cur_j = j;
+    while (cur_j < n) {
+      while (cur_j < n && !(t[cur_j].type == TOKEN_SYMBOL &&
+             (strcmp(t[cur_j].text, ",") == 0 || strcmp(t[cur_j].text, ";") == 0))) {
+        if (t[cur_j].type == TOKEN_SYMBOL && (strcmp(t[cur_j].text, "(") == 0 || strcmp(t[cur_j].text, "[") == 0)) {
+          int cl = matching_close(t, n, cur_j, t[cur_j].text, strcmp(t[cur_j].text, "(") == 0 ? ")" : "]");
+          if (cl > cur_j) { cur_j = cl + 1; continue; }
+        }
+        cur_j++;
+      }
+      if (cur_j < n && t[cur_j].type == TOKEN_SYMBOL && strcmp(t[cur_j].text, ",") == 0) {
+        cur_j++;
+        while (cur_j < n && t[cur_j].type == TOKEN_SYMBOL && strcmp(t[cur_j].text, "*") == 0) cur_j++;
+        if (cur_j < n && t[cur_j].type == TOKEN_IDENTIFIER) {
+          bool arr2 = isArr;
+          int after2 = cur_j + 1;
+          while (after2 + 1 < n && t[after2].type == TOKEN_SYMBOL && strcmp(t[after2].text, "[") == 0 &&
+                 t[after2 + 1].type == TOKEN_SYMBOL && strcmp(t[after2 + 1].text, "]") == 0) {
+            arr2 = true;
+            after2 += 2;
+          }
+          bool isBraceInit2 = false;
+          int eq2 = after2;
+          while (eq2 < n && eq2 < cur_j + 10 && !(t[eq2].type == TOKEN_SYMBOL && strcmp(t[eq2].text, ";") == 0)) {
+            if (t[eq2].type == TOKEN_OPERATOR && strcmp(t[eq2].text, "=") == 0 &&
+                eq2 + 1 < n && t[eq2 + 1].type == TOKEN_SYMBOL && strcmp(t[eq2 + 1].text, "{") == 0) {
+              isBraceInit2 = true;
+              break;
+            }
+            eq2++;
+          }
+          char gtype2[MAX_TOKEN_TEXT];
+          if (isBraceInit2)
+            snprintf(gtype2, sizeof(gtype2), "%s []", emit_c_type_str(tk.text));
+          else
+            snprintf(gtype2, sizeof(gtype2), "%s%s", emit_c_type_str(tk.text), arr2 ? " *" : "");
+          reg_sym_typed(t[cur_j].text, gtype2);
+          if (_nglob < MAX_SYMBOLS) {
+            snprintf(_globnames[_nglob], MAX_TOKEN_TEXT, "%s", t[cur_j].text);
+            snprintf(_globtypes[_nglob], MAX_TOKEN_TEXT, "%s", gtype2);
+            _nglob++;
+          }
+        }
+      } else {
+        break;
+      }
+    }
     // Detect non-constant initializer: scan ahead for = expr containing (
     {
       int k = j + 1;
@@ -1097,6 +1515,9 @@ static void scan_globals(Token *t, int n) {
         bool hasCall = false;
         for (int u = k + 1; u < n && u < k + 120; u++) {
           if (t[u].type == TOKEN_SYMBOL && strcmp(t[u].text, "(") == 0) {
+            hasCall = true; break;
+          }
+          if (t[u].type == TOKEN_IDENTIFIER && strcmp(t[u].text, "new") == 0) {
             hasCall = true; break;
           }
           if (t[u].type == TOKEN_SYMBOL && strcmp(t[u].text, ";") == 0) break;
@@ -1131,7 +1552,7 @@ static void scan_fn_locals(Token *t, int n) {
     int j = i + 1;
     if (j + 1 < n && t[j].type == TOKEN_SYMBOL && strcmp(t[j].text, "[") == 0 &&
         t[j + 1].type == TOKEN_SYMBOL && strcmp(t[j + 1].text, "]") == 0) j += 2;
-    if (j >= n || t[j].type != TOKEN_IDENTIFIER) continue;
+    if (j >= n || (t[j].type != TOKEN_IDENTIFIER && strcmp(t[j].text, "setup") != 0 && strcmp(t[j].text, "draw") != 0)) continue;
     if (j + 1 >= n || t[j + 1].type != TOKEN_SYMBOL ||
         strcmp(t[j + 1].text, "(") != 0) continue;
     int close = matching_close(t, n, j + 1, "(", ")");
@@ -1187,7 +1608,7 @@ int rewrite_classes(Token *t, int n, Token **out_tokens) {
     // empty value class with an implicit ctor in processing.h)
     if (cur.type == TOKEN_IDENTIFIER && strcmp(cur.text, "new") == 0 &&
         i + 2 < n && t[i + 1].type == TOKEN_IDENTIFIER &&
-        (is_class_name(t[i + 1].text) || strcmp(t[i + 1].text, "Object") == 0) &&
+        (is_class_name(t[i + 1].text) || is_builtin_ctor_class(t[i + 1].text)) &&
         t[i + 2].type == TOKEN_SYMBOL && strcmp(t[i + 2].text, "(") == 0) {
       Token alias = cur;
       snprintf(alias.text, MAX_TOKEN_TEXT, "%s_ctor", t[i + 1].text);
@@ -1238,35 +1659,64 @@ int rewrite_classes(Token *t, int n, Token **out_tokens) {
       }
     }
 
-    // member-call routing on typed receivers (skip chains: `a.b.meth(`
-    // routes only when `b` is itself a standalone typed variable)
+    // Minim.CONSTANT -> CONSTANT
+    if (cur.type == TOKEN_IDENTIFIER && strcmp(cur.text, "Minim") == 0 &&
+        i + 1 < n && t[i + 1].type == TOKEN_DOT) {
+      i += 1;
+      continue;
+    }
+
+    // member-call routing on typed receivers: `a.meth(` or `a[i].meth(`
+    int dotIdx = i + 1;
+    bool isArrElem = false;
+    while (dotIdx + 1 < n && t[dotIdx].type == TOKEN_SYMBOL && strcmp(t[dotIdx].text, "[") == 0) {
+      int cl = matching_close(t, n, dotIdx, "[", "]");
+      if (cl > dotIdx) { dotIdx = cl + 1; isArrElem = true; }
+      else break;
+    }
     if ((i == 0 || t[i - 1].type != TOKEN_DOT) &&
-        cur.type == TOKEN_IDENTIFIER && i + 3 < n &&
-        t[i + 1].type == TOKEN_DOT && t[i + 2].type == TOKEN_IDENTIFIER &&
-        t[i + 3].type == TOKEN_SYMBOL && strcmp(t[i + 3].text, "(") == 0) {
+        cur.type == TOKEN_IDENTIFIER && dotIdx + 2 < n &&
+        t[dotIdx].type == TOKEN_DOT &&
+        (t[dotIdx + 1].type == TOKEN_IDENTIFIER || strcmp(t[dotIdx + 1].text, "draw") == 0 || strcmp(t[dotIdx + 1].text, "setup") == 0) &&
+        t[dotIdx + 2].type == TOKEN_SYMBOL && strcmp(t[dotIdx + 2].text, "(") == 0) {
       const char *ty = symbol_type(cur.text);
-      const char *mn = t[i + 2].text;
-      bool noArg = (i + 4 < n && t[i + 4].type == TOKEN_SYMBOL &&
-                    strcmp(t[i + 4].text, ")") == 0);
-      if (ty && strcmp(ty, "ArrayList") == 0 && is_ag_method(mn)) {
+      const char *mn = t[dotIdx + 1].text;
+      bool noArg = (dotIdx + 3 < n && t[dotIdx + 3].type == TOKEN_SYMBOL &&
+                    strcmp(t[dotIdx + 3].text, ")") == 0);
+      char elemTy[MAX_TOKEN_TEXT];
+      if (ty) {
+        snprintf(elemTy, sizeof(elemTy), "%s", ty);
+        char *star = strchr(elemTy, '*');
+        if (star) { while (star > elemTy && *(star-1) == ' ') star--; *star = '\0'; }
+      }
+      const char *targetTy = isArrElem ? elemTy : ty;
+      if (!isArrElem && strcmp(cur.text, "PVector") == 0) {
+        Token fn = cur;
+        snprintf(fn.text, MAX_TOKEN_TEXT, "pvector_%s", mn);
+        out[o++] = fn;
+        Token ol = cur; strcpy(ol.text, "("); out[o++] = ol;
+        i = dotIdx + 2;
+        continue;
+      }
+      if (!isArrElem && targetTy && strcmp(targetTy, "ArrayList") == 0 && is_ag_method(mn)) {
         Token fn = cur;
         snprintf(fn.text, MAX_TOKEN_TEXT, "_pde_ag_%s", mn);
         out[o++] = fn;
         Token ol = cur; strcpy(ol.text, "("); out[o++] = ol;
         out[o++] = cur; // receiver
         if (!noArg) { Token cm = cur; strcpy(cm.text, ","); out[o++] = cm; }
-        i += 3;
+        i = dotIdx + 2;
         continue;
       }
-      if (ty && is_class_name(ty) && class_has_method(ty, mn)) {
+      if (targetTy && is_class_name(targetTy) && class_has_method(targetTy, mn)) {
         Token fn = cur;
-        snprintf(fn.text, MAX_TOKEN_TEXT, "%s_%s", ty, mn);
+        snprintf(fn.text, MAX_TOKEN_TEXT, "%s_%s", targetTy, mn);
         out[o++] = fn;
         Token ol = cur; strcpy(ol.text, "("); out[o++] = ol;
         Token amp = cur; strcpy(amp.text, "&"); amp.type = TOKEN_OPERATOR; out[o++] = amp;
-        out[o++] = cur; // receiver
+        for (int q = i; q < dotIdx; q++) out[o++] = t[q];
         if (!noArg) { Token cm = cur; strcpy(cm.text, ","); out[o++] = cm; }
-        i += 3;
+        i = dotIdx + 2;
         continue;
       }
     }
@@ -1280,8 +1730,8 @@ int rewrite_classes(Token *t, int n, Token **out_tokens) {
 // PVector methods that reassign the receiver: v.add(w) -> v = pvector_add(v, w)
 bool pvector_mutator_method(const char *name) {
   static const char *mutators[] = { "add", "sub", "mult", "div",
-                                    "normalize", "limit", "setMag", "rotate" };
-  for (int i = 0; i < 8; i++) {
+                                    "normalize", "limit", "setMag", "rotate", "set" };
+  for (int i = 0; i < 9; i++) {
     if (strcmp(name, mutators[i]) == 0) return true;
   }
   return false;
@@ -1334,6 +1784,13 @@ int count_call_args(Token *tokens, int num_tokens, int open, int *close_out) {
 // uses. Constructors build a stack struct, run field initializers, then the
 // body, and return it by value.
 
+static const char *local_type_of(const ClassMethod *m, const char *name) {
+  if (!m) return NULL;
+  for (int i = 0; i < m->nlocals; i++)
+    if (strcmp(m->locals[i], name) == 0) return m->local_types[i];
+  return NULL;
+}
+
 static const char *field_type_of(const ClassDef *c, const char *name) {
   for (int i = 0; i < c->nfields; i++)
     if (strcmp(c->fields[i].name, name) == 0) return c->fields[i].type;
@@ -1376,12 +1833,113 @@ static void emit_class_body(const ClassDef *c, const ClassMethod *m, Token *t, i
   for (int i = 0; i < n; i++) {
     Token tk = t[i];
 
-    // this.x -> self->x  (also `this.i` inside a ctor with a shadowing param)
-    if (tk.type == TOKEN_IDENTIFIER && strcmp(tk.text, "this") == 0 &&
-        i + 2 < n && t[i + 1].type == TOKEN_DOT && t[i + 2].type == TOKEN_IDENTIFIER) {
-      printf("self->%s", t[i + 2].text);
+    // `(Type[])` array cast -> `(Type *)`
+    if (tk.type == TOKEN_SYMBOL && strcmp(tk.text, "(") == 0 &&
+        i + 4 < n && is_plausible_type_token(t[i + 1]) &&
+        t[i + 2].type == TOKEN_SYMBOL && strcmp(t[i + 2].text, "[") == 0 &&
+        t[i + 3].type == TOKEN_SYMBOL && strcmp(t[i + 3].text, "]") == 0 &&
+        t[i + 4].type == TOKEN_SYMBOL && strcmp(t[i + 4].text, ")") == 0) {
+      const char *cty = emit_c_type_str(t[i + 1].text);
+      if (strcmp(cty, "const char *") == 0)
+        printf("(const char **)");
+      else
+        printf("(%s *)", cty);
+      i += 4;
+      continue;
+    }
+
+    // `(PGraphics3D) expr` -> `_pde_as_pgraphics3d(expr)`
+    if (tk.type == TOKEN_SYMBOL && strcmp(tk.text, "(") == 0 &&
+        i + 3 < n && strcmp(t[i + 1].text, "PGraphics3D") == 0 &&
+        t[i + 2].type == TOKEN_SYMBOL && strcmp(t[i + 2].text, ")") == 0 &&
+        t[i + 3].type == TOKEN_IDENTIFIER) {
+      char recv[MAX_TOKEN_TEXT + 8];
+      class_recv(c, t[i + 3].text, recv, sizeof(recv));
+      printf("_pde_as_pgraphics3d(%s)", recv);
+      i += 3;
+      continue;
+    }
+
+    // `(PGraphics...)` struct cast stripping -> skip the cast parens & type
+    if (tk.type == TOKEN_SYMBOL && strcmp(tk.text, "(") == 0 &&
+        i + 2 < n &&
+        (strcmp(t[i + 1].text, "PGraphics") == 0 ||
+         strcmp(t[i + 1].text, "PGraphicsOpenGL") == 0 ||
+         strcmp(t[i + 1].text, "PGraphicsPDF") == 0 ||
+         strcmp(t[i + 1].text, "PGraphics2D") == 0) &&
+        t[i + 2].type == TOKEN_SYMBOL && strcmp(t[i + 2].text, ")") == 0) {
       i += 2;
       continue;
+    }
+
+    // primitive type conversion cast: int(x), float(x), char(x), double(x) -> (int)(x) etc.
+    if (tk.type == TOKEN_KEYWORD &&
+        (strcmp(tk.text, "int") == 0 || strcmp(tk.text, "float") == 0 ||
+         strcmp(tk.text, "char") == 0 || strcmp(tk.text, "double") == 0) &&
+        i + 1 < n && t[i + 1].type == TOKEN_SYMBOL && strcmp(t[i + 1].text, "(") == 0) {
+      printf("(%s)", emit_c_type_str(tk.text));
+      continue;
+    }
+
+    // boolean mapping
+    if (tk.type == TOKEN_KEYWORD && strcmp(tk.text, "boolean") == 0) {
+      if (i + 1 < n && t[i + 1].type == TOKEN_SYMBOL && strcmp(t[i + 1].text, "(") == 0)
+        printf("boolean");
+      else
+        printf("bool ");
+      continue;
+    }
+
+    // color mapping
+    if (tk.type == TOKEN_KEYWORD && strcmp(tk.text, "color") == 0) {
+      if (!(i + 1 < n && t[i + 1].type == TOKEN_SYMBOL && strcmp(t[i + 1].text, "(") == 0)) {
+        printf("uint32_t ");
+        continue;
+      }
+    }
+
+    // String type mapping inside methods
+    if (tk.type == TOKEN_IDENTIFIER && strcmp(tk.text, "String") == 0) {
+      printf("const char *");
+      continue;
+    }
+
+    // Java null literal -> NULL
+    if (tk.type == TOKEN_IDENTIFIER && strcmp(tk.text, "null") == 0) {
+      printf("NULL");
+      continue;
+    }
+
+    // super.method(...) -> ((void)0)
+    if (tk.type == TOKEN_IDENTIFIER && strcmp(tk.text, "super") == 0 &&
+        i + 3 < n && t[i + 1].type == TOKEN_DOT &&
+        t[i + 2].type == TOKEN_IDENTIFIER &&
+        t[i + 3].type == TOKEN_SYMBOL && strcmp(t[i + 3].text, "(") == 0) {
+      int close = matching_close(t, n, i + 3, "(", ")");
+      if (close > i + 3) {
+        printf("((void)0)");
+        i = close;
+        continue;
+      }
+    }
+
+    // color(...) -> pack_color(...)
+    if (strcmp(tk.text, "color") == 0 && i + 1 < n &&
+        t[i + 1].type == TOKEN_SYMBOL && strcmp(t[i + 1].text, "(") == 0) {
+      printf("pack_color");
+      continue;
+    }
+
+    // this.x -> self->x  (also bare this -> self)
+    if (tk.type == TOKEN_IDENTIFIER && strcmp(tk.text, "this") == 0) {
+      if (i + 2 < n && t[i + 1].type == TOKEN_DOT && t[i + 2].type == TOKEN_IDENTIFIER) {
+        printf("self->%s", t[i + 2].text);
+        i += 2;
+        continue;
+      } else {
+        printf("self");
+        continue;
+      }
     }
 
     // `new` forms
@@ -1395,7 +1953,7 @@ static void emit_class_body(const ClassDef *c, const ClassMethod *m, Token *t, i
         continue;
       }
       if (i + 2 < n && t[i + 1].type == TOKEN_IDENTIFIER &&
-          (is_class_name(t[i + 1].text) || strcmp(t[i + 1].text, "Object") == 0) &&
+          (is_class_name(t[i + 1].text) || is_builtin_ctor_class(t[i + 1].text)) &&
           t[i + 2].type == TOKEN_SYMBOL && strcmp(t[i + 2].text, "(") == 0) {
         printf("%s_ctor", t[i + 1].text);
         synth_sp(t, n, i + 2);
@@ -1414,6 +1972,63 @@ static void emit_class_body(const ClassDef *c, const ClassMethod *m, Token *t, i
           continue;
         }
       }
+      // new TYPE[d1]... -> (TYPE *)_pde_array*_new(d1, ..., sizeof(TYPE))
+      if (i + 3 < n &&
+          (t[i + 1].type == TOKEN_IDENTIFIER || t[i + 1].type == TOKEN_KEYWORD) &&
+          t[i + 2].type == TOKEN_SYMBOL && strcmp(t[i + 2].text, "[") == 0 &&
+          !(t[i + 3].type == TOKEN_SYMBOL && strcmp(t[i + 3].text, "]") == 0)) {
+        const char *elemType = emit_c_type_str(t[i + 1].text);
+        int dimStarts[4], dimEnds[4];
+        int nDims = 0;
+        int cur = i + 2;
+        while (nDims < 4 && cur < n &&
+               t[cur].type == TOKEN_SYMBOL && strcmp(t[cur].text, "[") == 0) {
+          int depth = 1, s = cur + 1, e = s;
+          while (e < n && depth > 0) {
+            if (t[e].type == TOKEN_SYMBOL && strcmp(t[e].text, "[") == 0) depth++;
+            else if (t[e].type == TOKEN_SYMBOL && strcmp(t[e].text, "]") == 0) depth--;
+            if (depth == 0) break;
+            e++;
+          }
+          if (depth == 0) {
+            dimStarts[nDims] = s;
+            dimEnds[nDims] = e;
+            nDims++;
+            cur = e + 1;
+          } else break;
+        }
+        if (nDims > 0) {
+          if (nDims == 1)      printf("(%s *)_pde_array_new(", elemType);
+          else if (nDims == 2) printf("(%s **)_pde_array2d_new(", elemType);
+          else if (nDims == 3) printf("(%s ***)_pde_array3d_new(", elemType);
+          else                 printf("(%s *)_pde_array_new(", elemType);
+          for (int d = 0; d < nDims; d++) {
+            if (d > 0) printf(", ");
+            for (int q = dimStarts[d]; q < dimEnds[d]; q++) {
+              if (t[q].type == TOKEN_IDENTIFIER &&
+                  q + 2 < dimEnds[d] &&
+                  t[q + 1].type == TOKEN_DOT &&
+                  t[q + 2].type == TOKEN_IDENTIFIER &&
+                  strcmp(t[q + 2].text, "length") == 0) {
+                char recv[MAX_TOKEN_TEXT + 8];
+                class_recv(c, t[q].text, recv, sizeof(recv));
+                printf("_pde_len(%s)", recv);
+                q += 2;
+              } else if (t[q].type == TOKEN_IDENTIFIER && is_field_of(c, t[q].text)) {
+                char recv[MAX_TOKEN_TEXT + 8];
+                class_recv(c, t[q].text, recv, sizeof(recv));
+                printf("%s", recv);
+              } else {
+                printf("%s", t[q].text);
+              }
+              if (q + 1 < dimEnds[d]) printf(" ");
+            }
+          }
+          printf(", sizeof(%s))", elemType);
+          i = dimEnds[nDims - 1];
+          continue;
+        }
+      }
     }
 
     // `(Type) name.get(i)` ArrayList cast-deref
@@ -1425,7 +2040,8 @@ static void emit_class_body(const ClassDef *c, const ClassMethod *m, Token *t, i
         t[i + 5].type == TOKEN_IDENTIFIER && strcmp(t[i + 5].text, "get") == 0 &&
         t[i + 6].type == TOKEN_SYMBOL && strcmp(t[i + 6].text, "(") == 0) {
       const char *subj = t[i + 3].text;
-      const char *ft = is_field_of(c, subj) ? field_type_of(c, subj) : symbol_type(subj);
+      const char *ft = local_type_of(m, subj);
+      if (!ft) ft = is_field_of(c, subj) ? field_type_of(c, subj) : symbol_type(subj);
       if (ft && strcmp(ft, "ArrayList") == 0) {
         char recv[MAX_TOKEN_TEXT + 8];
         class_recv(c, subj, recv, sizeof(recv));
@@ -1435,16 +2051,104 @@ static void emit_class_body(const ClassDef *c, const ClassMethod *m, Token *t, i
       }
     }
 
-    // member call on a PVector / user-class / ArrayList receiver
-    if (tk.type == TOKEN_IDENTIFIER && i + 3 < n &&
-        t[i + 1].type == TOKEN_DOT && t[i + 2].type == TOKEN_IDENTIFIER &&
-        t[i + 3].type == TOKEN_SYMBOL && strcmp(t[i + 3].text, "(") == 0) {
+    // Minim.CONSTANT -> CONSTANT
+    if (tk.type == TOKEN_IDENTIFIER && strcmp(tk.text, "Minim") == 0 &&
+        i + 1 < n && t[i + 1].type == TOKEN_DOT) {
+      i += 1;
+      continue;
+    }
+
+    // EXPR == null / EXPR != null check for user classes
+    int eqIdx = i + 1;
+    bool isArrNull = false;
+    while (eqIdx + 1 < n && t[eqIdx].type == TOKEN_SYMBOL && strcmp(t[eqIdx].text, "[") == 0) {
+      int cl = matching_close(t, n, eqIdx, "[", "]");
+      if (cl > eqIdx) { eqIdx = cl + 1; isArrNull = true; }
+      else break;
+    }
+    if ((i == 0 || t[i - 1].type != TOKEN_DOT) &&
+        tk.type == TOKEN_IDENTIFIER && eqIdx + 1 < n &&
+        (strcmp(t[eqIdx].text, "==") == 0 || strcmp(t[eqIdx].text, "!=") == 0) &&
+        (strcmp(t[eqIdx + 1].text, "null") == 0 || strcmp(t[eqIdx + 1].text, "NULL") == 0)) {
+      bool isNeq = (strcmp(t[eqIdx].text, "!=") == 0);
       const char *subj = tk.text;
-      const char *meth = t[i + 2].text;
-      bool zeroArg = (i + 4 < n && t[i + 4].type == TOKEN_SYMBOL &&
-                      strcmp(t[i + 4].text, ")") == 0);
-      const char *ft = is_field_of(c, subj) ? field_type_of(c, subj) : symbol_type(subj);
-      if (ft && strcmp(ft, "PVector") == 0 &&
+      const char *ft = local_type_of(m, subj);
+      if (!ft) ft = is_field_of(c, subj) ? field_type_of(c, subj) : symbol_type(subj);
+      char elemTy[MAX_TOKEN_TEXT];
+      if (ft) {
+        snprintf(elemTy, sizeof(elemTy), "%s", ft);
+        char *star = strchr(elemTy, '*');
+        if (star) { while (star > elemTy && *(star-1) == ' ') star--; *star = '\0'; }
+      }
+      const char *targetTy = isArrNull ? elemTy : ft;
+      if (targetTy && is_class_name(targetTy) && targetTy[strlen(targetTy)-1] != '*') {
+        char recv[MAX_TOKEN_TEXT + 8];
+        class_recv(c, subj, recv, sizeof(recv));
+        if (isArrNull) {
+          char fullRecv[MAX_TOKEN_TEXT * 2];
+          snprintf(fullRecv, sizeof(fullRecv), "%s", recv);
+          int rlen = (int)strlen(fullRecv);
+          for (int q = i + 1; q < eqIdx && rlen + 32 < (int)sizeof(fullRecv); q++) {
+            rlen += snprintf(fullRecv + rlen, sizeof(fullRecv) - rlen, "%s", t[q].text);
+          }
+          printf("%s_pde_is_null(%s)", isNeq ? "!" : "", fullRecv);
+        } else {
+          printf("%s_pde_is_null(%s)", isNeq ? "!" : "", recv);
+        }
+        i = eqIdx + 1;
+        continue;
+      }
+    }
+
+    // Assignment of null to a user class: vecOne = null -> vecOne = (Vector){0}
+    if ((i == 0 || t[i - 1].type != TOKEN_DOT) &&
+        tk.type == TOKEN_IDENTIFIER && i + 2 < n &&
+        t[i + 1].type == TOKEN_OPERATOR && strcmp(t[i + 1].text, "=") == 0 &&
+        (strcmp(t[i + 2].text, "null") == 0 || strcmp(t[i + 2].text, "NULL") == 0)) {
+      const char *subj = tk.text;
+      const char *ft = local_type_of(m, subj);
+      if (!ft) ft = is_field_of(c, subj) ? field_type_of(c, subj) : symbol_type(subj);
+      if (ft && is_class_name(ft) && ft[strlen(ft)-1] != '*') {
+        char recv[MAX_TOKEN_TEXT + 8];
+        class_recv(c, subj, recv, sizeof(recv));
+        printf("%s = (%s){0}", recv, ft);
+        i += 2;
+        continue;
+      }
+    }
+
+    // member call on a PVector / user-class / ArrayList receiver
+    int dotIdx = i + 1;
+    bool isArrElem = false;
+    while (dotIdx + 1 < n && t[dotIdx].type == TOKEN_SYMBOL && strcmp(t[dotIdx].text, "[") == 0) {
+      int cl = matching_close(t, n, dotIdx, "[", "]");
+      if (cl > dotIdx) { dotIdx = cl + 1; isArrElem = true; }
+      else break;
+    }
+    if ((i == 0 || t[i - 1].type != TOKEN_DOT) &&
+        tk.type == TOKEN_IDENTIFIER && dotIdx + 2 < n &&
+        t[dotIdx].type == TOKEN_DOT &&
+        (t[dotIdx + 1].type == TOKEN_IDENTIFIER || strcmp(t[dotIdx + 1].text, "draw") == 0 || strcmp(t[dotIdx + 1].text, "setup") == 0) &&
+        t[dotIdx + 2].type == TOKEN_SYMBOL && strcmp(t[dotIdx + 2].text, "(") == 0) {
+      const char *subj = tk.text;
+      const char *meth = t[dotIdx + 1].text;
+      if (!isArrElem && strcmp(subj, "PVector") == 0) {
+        printf("pvector_%s(", meth);
+        i = dotIdx + 2;
+        continue;
+      }
+      bool zeroArg = (dotIdx + 3 < n && t[dotIdx + 3].type == TOKEN_SYMBOL &&
+                      strcmp(t[dotIdx + 3].text, ")") == 0);
+      const char *ft = local_type_of(m, subj);
+      if (!ft) ft = is_field_of(c, subj) ? field_type_of(c, subj) : symbol_type(subj);
+      char elemTy[MAX_TOKEN_TEXT];
+      if (ft) {
+        snprintf(elemTy, sizeof(elemTy), "%s", ft);
+        char *star = strchr(elemTy, '*');
+        if (star) { while (star > elemTy && *(star-1) == ' ') star--; *star = '\0'; }
+      }
+      const char *targetTy = isArrElem ? elemTy : ft;
+      if (!isArrElem && ft && strcmp(ft, "PVector") == 0 &&
           (pvector_mutator_method(meth) || pvector_accessor_method(meth))) {
         char recv[MAX_TOKEN_TEXT + 8];
         class_recv(c, subj, recv, sizeof(recv));
@@ -1452,21 +2156,66 @@ static void emit_class_body(const ClassDef *c, const ClassMethod *m, Token *t, i
           printf("%s = pvector_%s(%s%s", recv, meth, recv, zeroArg ? "" : ", ");
         else
           printf("pvector_%s(%s%s", meth, recv, zeroArg ? "" : ", ");
-        i += 3;
+        i = dotIdx + 2;
         continue;
       }
-      if (ft && strcmp(ft, "ArrayList") == 0 && is_ag_method(meth)) {
+      if (!isArrElem && ft && strcmp(ft, "ArrayList") == 0 && is_ag_method(meth)) {
         char recv[MAX_TOKEN_TEXT + 8];
         class_recv(c, subj, recv, sizeof(recv));
         printf("_pde_ag_%s(%s%s", meth, recv, zeroArg ? "" : ", ");
-        i += 3;
+        i = dotIdx + 2;
         continue;
       }
-      if (ft && is_class_name(ft) && class_has_method(ft, meth)) {
+      if (targetTy && is_class_name(targetTy) && class_has_method(targetTy, meth)) {
         char recv[MAX_TOKEN_TEXT + 8];
         class_recv(c, subj, recv, sizeof(recv));
-        printf("%s_%s(%s%s", ft, meth, recv, zeroArg ? "" : ", ");
-        i += 3;
+        // Check if single argument is null/NULL and param type is a user class struct
+        const ClassMethod *targetMeth = NULL;
+        for (int ci = 0; ci < _nclasses; ci++) {
+          if (strcmp(_classes[ci].name, targetTy) == 0) {
+            for (int mi = 0; mi < _classes[ci].nmethods; mi++) {
+              if (!_classes[ci].methods[mi].isCtor && strcmp(_classes[ci].methods[mi].name, meth) == 0) {
+                targetMeth = &_classes[ci].methods[mi];
+                break;
+              }
+            }
+            break;
+          }
+        }
+        if (targetMeth && targetMeth->nparams == 1 &&
+            dotIdx + 4 < n && (strcmp(t[dotIdx + 3].text, "null") == 0 || strcmp(t[dotIdx + 3].text, "NULL") == 0) &&
+            t[dotIdx + 4].type == TOKEN_SYMBOL && strcmp(t[dotIdx + 4].text, ")") == 0) {
+          const char *p0 = targetMeth->local_types[0];
+          if (p0 && is_class_name(p0) && p0[strlen(p0)-1] != '*') {
+            if (isArrElem) {
+              char fullRecv[MAX_TOKEN_TEXT * 2];
+              snprintf(fullRecv, sizeof(fullRecv), "%s", recv);
+              int rlen = (int)strlen(fullRecv);
+              for (int q = i + 1; q < dotIdx && rlen + 32 < (int)sizeof(fullRecv); q++) {
+                rlen += snprintf(fullRecv + rlen, sizeof(fullRecv) - rlen, "%s", t[q].text);
+              }
+              printf("%s_%s(&%s, (%s){0})", targetTy, meth, fullRecv, p0);
+            } else {
+              bool isPtr = (strcmp(recv, "self") == 0 || (targetTy && targetTy[strlen(targetTy)-1] == '*'));
+              printf("%s_%s(%s%s, (%s){0})", targetTy, meth, isPtr ? "" : "&", recv, p0);
+            }
+            i = dotIdx + 4;
+            continue;
+          }
+        }
+        if (isArrElem) {
+          char fullRecv[MAX_TOKEN_TEXT * 2];
+          snprintf(fullRecv, sizeof(fullRecv), "%s", recv);
+          int rlen = (int)strlen(fullRecv);
+          for (int q = i + 1; q < dotIdx && rlen + 32 < (int)sizeof(fullRecv); q++) {
+            rlen += snprintf(fullRecv + rlen, sizeof(fullRecv) - rlen, "%s", t[q].text);
+          }
+          printf("%s_%s(&%s%s", targetTy, meth, fullRecv, zeroArg ? "" : ", ");
+        } else {
+          bool isPtr = (strcmp(recv, "self") == 0 || (targetTy && targetTy[strlen(targetTy)-1] == '*'));
+          printf("%s_%s(%s%s%s", targetTy, meth, isPtr ? "" : "&", recv, zeroArg ? "" : ", ");
+        }
+        i = dotIdx + 2;
         continue;
       }
     }
@@ -1497,7 +2246,7 @@ static void emit_class_body(const ClassDef *c, const ClassMethod *m, Token *t, i
 
     // bare field use -> self->field (unless shadowed by a local/param/global
     // or it is actually a call to a same-named method, handled above)
-    if (tk.type == TOKEN_IDENTIFIER && is_field_of(c, tk.text)) {
+    if ((i == 0 || t[i - 1].type != TOKEN_DOT) && tk.type == TOKEN_IDENTIFIER && is_field_of(c, tk.text)) {
       bool shadowed = false;
       if (m) for (int k = 0; k < m->nlocals; k++)
         if (strcmp(m->locals[k], tk.text) == 0) { shadowed = true; break; }
@@ -1517,10 +2266,231 @@ static void emit_class_body(const ClassDef *c, const ClassMethod *m, Token *t, i
   }
 }
 
+static void get_ctor_name(const ClassDef *c, int mi, char *buf, size_t sz) {
+  int nctors = 0;
+  for (int j = 0; j < c->nmethods; j++) {
+    if (c->methods[j].isCtor) nctors++;
+  }
+  if (nctors <= 1) {
+    snprintf(buf, sz, "%s_ctor", c->name);
+    return;
+  }
+  const ClassMethod *mm = &c->methods[mi];
+  int dupCount = 0;
+  for (int j = 0; j < mi; j++) {
+    if (c->methods[j].isCtor && c->methods[j].nparams == mm->nparams) dupCount++;
+  }
+  int totalWithArity = 0;
+  for (int j = 0; j < c->nmethods; j++) {
+    if (c->methods[j].isCtor && c->methods[j].nparams == mm->nparams) totalWithArity++;
+  }
+  if (dupCount > 0) {
+    snprintf(buf, sz, "%s_ctor_%d_dup%d", c->name, mm->nparams, dupCount);
+  } else if (totalWithArity > 1) {
+    snprintf(buf, sz, "%s_ctor_%d_base", c->name, mm->nparams);
+  } else {
+    snprintf(buf, sz, "%s_ctor_%d", c->name, mm->nparams);
+  }
+}
+
+static void get_method_name(const ClassDef *c, int mi, char *buf, size_t sz) {
+  const ClassMethod *mm = &c->methods[mi];
+  int count = 0;
+  for (int j = 0; j < c->nmethods; j++) {
+    if (!c->methods[j].isCtor && strcmp(c->methods[j].name, mm->name) == 0) count++;
+  }
+  if (count <= 1) {
+    snprintf(buf, sz, "%s_%s", c->name, mm->name);
+    return;
+  }
+  int dupCount = 0;
+  for (int j = 0; j < mi; j++) {
+    if (!c->methods[j].isCtor && strcmp(c->methods[j].name, mm->name) == 0 &&
+        c->methods[j].nparams == mm->nparams) dupCount++;
+  }
+  int totalWithArity = 0;
+  for (int j = 0; j < c->nmethods; j++) {
+    if (!c->methods[j].isCtor && strcmp(c->methods[j].name, mm->name) == 0 &&
+        c->methods[j].nparams == mm->nparams) totalWithArity++;
+  }
+  if (dupCount > 0) {
+    snprintf(buf, sz, "%s_%s_%d_dup%d", c->name, mm->name, mm->nparams, dupCount);
+  } else if (totalWithArity > 1) {
+    snprintf(buf, sz, "%s_%s_%d_base", c->name, mm->name, mm->nparams);
+  } else {
+    snprintf(buf, sz, "%s_%s_%d", c->name, mm->name, mm->nparams);
+  }
+}
+
+static void emit_method_dispatch_macro(const ClassDef *c, const char *methName, int arity) {
+  int indices[16];
+  int n = 0;
+  for (int mi = 0; mi < c->nmethods; mi++) {
+    if (!c->methods[mi].isCtor && strcmp(c->methods[mi].name, methName) == 0 &&
+        c->methods[mi].nparams == arity && n < 16) {
+      indices[n++] = mi;
+    }
+  }
+  if (n <= 1) return;
+
+  char params[128] = "self";
+  size_t plen = 4;
+  for (int a = 0; a < arity; a++) {
+    plen += snprintf(params + plen, sizeof(params) - plen, ", _%d", a + 1);
+  }
+
+  int defIdx = -1;
+  for (int i = 0; i < n; i++) {
+    const char *t0 = c->methods[indices[i]].local_types[0];
+    if (!t0 || strcmp(t0, "float") == 0 || strcmp(t0, "int") == 0 || strcmp(t0, "double") == 0) {
+      defIdx = indices[i];
+      break;
+    }
+  }
+  if (defIdx < 0) defIdx = indices[0];
+
+  char defName[MAX_TOKEN_TEXT];
+  get_method_name(c, defIdx, defName, sizeof(defName));
+
+  char types[16][MAX_TOKEN_TEXT];
+  int ntypes = 0;
+  for (int i = 0; i < n; i++) {
+    if (indices[i] == defIdx) continue;
+    const char *t0 = c->methods[indices[i]].local_types[0];
+    if (!t0) continue;
+    bool found = false;
+    for (int j = 0; j < ntypes; j++) {
+      if (strcmp(types[j], t0) == 0) { found = true; break; }
+    }
+    if (!found && ntypes < 16) {
+      snprintf(types[ntypes++], MAX_TOKEN_TEXT, "%s", t0);
+    }
+  }
+
+  printf("#define %s_%s_%d(%s) ", c->name, methName, arity, params);
+  if (ntypes == 0) {
+    printf("%s(%s)\n", defName, params);
+    return;
+  }
+
+  printf("_Generic((_1), ");
+  for (int t = 0; t < ntypes; t++) {
+    int sub[16];
+    int nsub = 0;
+    for (int i = 0; i < n; i++) {
+      if (indices[i] == defIdx) continue;
+      const char *t0 = c->methods[indices[i]].local_types[0];
+      if (t0 && strcmp(t0, types[t]) == 0) sub[nsub++] = indices[i];
+    }
+    printf("%s: ", types[t]);
+    if (nsub == 1 || arity < 2) {
+      char mname[MAX_TOKEN_TEXT];
+      get_method_name(c, sub[0], mname, sizeof(mname));
+      printf("%s, ", mname);
+    } else {
+      char subDef[MAX_TOKEN_TEXT];
+      get_method_name(c, sub[0], subDef, sizeof(subDef));
+      printf("_Generic((_2), ");
+      for (int s = 1; s < nsub; s++) {
+        const char *t1 = c->methods[sub[s]].local_types[1];
+        char sname[MAX_TOKEN_TEXT];
+        get_method_name(c, sub[s], sname, sizeof(sname));
+        if (t1) printf("%s: %s, ", t1, sname);
+      }
+      printf("default: %s), ", subDef);
+    }
+  }
+  printf("default: %s)(%s)\n", defName, params);
+}
+
+static void emit_ctor_dispatch_macro(const ClassDef *c, int arity) {
+  int indices[16];
+  int n = 0;
+  for (int mi = 0; mi < c->nmethods; mi++) {
+    if (c->methods[mi].isCtor && c->methods[mi].nparams == arity && n < 16) {
+      indices[n++] = mi;
+    }
+  }
+  if (n <= 1) return;
+
+  char params[128] = "";
+  size_t plen = 0;
+  for (int a = 0; a < arity; a++) {
+    plen += snprintf(params + plen, sizeof(params) - plen, "%s_%d", a ? ", " : "", a + 1);
+  }
+
+  int defIdx = -1;
+  for (int i = 0; i < n; i++) {
+    const char *t0 = c->methods[indices[i]].local_types[0];
+    if (!t0 || strcmp(t0, "float") == 0 || strcmp(t0, "int") == 0 || strcmp(t0, "double") == 0) {
+      defIdx = indices[i];
+      break;
+    }
+  }
+  if (defIdx < 0) defIdx = indices[0];
+
+  char defName[MAX_TOKEN_TEXT];
+  get_ctor_name(c, defIdx, defName, sizeof(defName));
+
+  char types[16][MAX_TOKEN_TEXT];
+  int ntypes = 0;
+  for (int i = 0; i < n; i++) {
+    if (indices[i] == defIdx) continue;
+    const char *t0 = c->methods[indices[i]].local_types[0];
+    if (!t0) continue;
+    bool found = false;
+    for (int j = 0; j < ntypes; j++) {
+      if (strcmp(types[j], t0) == 0) { found = true; break; }
+    }
+    if (!found && ntypes < 16) {
+      snprintf(types[ntypes++], MAX_TOKEN_TEXT, "%s", t0);
+    }
+  }
+
+  printf("#define %s_ctor_%d(%s) ", c->name, arity, params);
+  if (ntypes == 0) {
+    printf("%s(%s)\n", defName, params);
+    return;
+  }
+
+  printf("_Generic((_1), ");
+  for (int t = 0; t < ntypes; t++) {
+    int sub[16];
+    int nsub = 0;
+    for (int i = 0; i < n; i++) {
+      if (indices[i] == defIdx) continue;
+      const char *t0 = c->methods[indices[i]].local_types[0];
+      if (t0 && strcmp(t0, types[t]) == 0) sub[nsub++] = indices[i];
+    }
+    printf("%s: ", types[t]);
+    if (nsub == 1 || arity < 2) {
+      char cname[MAX_TOKEN_TEXT];
+      get_ctor_name(c, sub[0], cname, sizeof(cname));
+      printf("%s, ", cname);
+    } else {
+      char subDef[MAX_TOKEN_TEXT];
+      get_ctor_name(c, sub[0], subDef, sizeof(subDef));
+      printf("_Generic((_2), ");
+      for (int s = 1; s < nsub; s++) {
+        const char *t1 = c->methods[sub[s]].local_types[1];
+        char sname[MAX_TOKEN_TEXT];
+        get_ctor_name(c, sub[s], sname, sizeof(sname));
+        if (t1) printf("%s: %s, ", t1, sname);
+      }
+      printf("default: %s), ", subDef);
+    }
+  }
+  printf("default: %s)(%s)\n", defName, params);
+}
+
 static void emit_class_typedefs_and_protos(void) {
   for (int i = 0; i < _nclasses; i++) {
+    printf("typedef struct _Pde_%s %s;\n", _classes[i].name, _classes[i].name);
+  }
+  printf("\n");
+  for (int i = 0; i < _nclasses; i++) {
     const ClassDef *c = &_classes[i];
-    printf("typedef struct {\n");
+    printf("struct _Pde_%s {\n", c->name);
     if (c->nfields == 0) {
       printf("  char _pde_unused;\n");
     } else {
@@ -1529,15 +2499,65 @@ static void emit_class_typedefs_and_protos(void) {
         printf("  %s%s %s;\n", fl->type, fl->isPointer ? " *" : "", fl->name);
       }
     }
-    printf("} %s;\n\n", c->name);
+    printf("};\n\n");
+    int nctors = 0;
     for (int mi = 0; mi < c->nmethods; mi++) {
       const ClassMethod *mm = &c->methods[mi];
       if (mm->isCtor) {
-        printf("%s %s_ctor(%s);\n", c->name, c->name,
+        nctors++;
+        char ctorName[MAX_TOKEN_TEXT];
+        get_ctor_name(c, mi, ctorName, sizeof(ctorName));
+        printf("%s %s(%s);\n", c->name, ctorName,
                mm->params[0] ? mm->params : "void");
       } else {
-        printf("%s %s_%s(%s *self%s%s);\n", mm->ret, c->name, mm->name, c->name,
+        char methName[MAX_TOKEN_TEXT];
+        get_method_name(c, mi, methName, sizeof(methName));
+        printf("%s %s(%s *self%s%s);\n", mm->ret, methName, c->name,
                mm->params[0] ? ", " : "", mm->params[0] ? mm->params : "");
+      }
+    }
+    // Emit ctor dispatcher macros for overloaded ctors with identical arities
+    bool arityEmitted[32] = {false};
+    for (int mi = 0; mi < c->nmethods; mi++) {
+      if (!c->methods[mi].isCtor) continue;
+      int a = c->methods[mi].nparams;
+      if (a < 32 && !arityEmitted[a]) {
+        arityEmitted[a] = true;
+        emit_ctor_dispatch_macro(c, a);
+      }
+    }
+    if (nctors > 1) {
+      printf("#define %s_ctor(...) _PDE_CONCAT(%s_ctor_, _PDE_NARGS(__VA_ARGS__))(__VA_ARGS__)\n", c->name, c->name);
+    }
+    // Emit method dispatcher macros for overloaded methods
+    for (int mi = 0; mi < c->nmethods; mi++) {
+      const ClassMethod *mm = &c->methods[mi];
+      if (mm->isCtor) continue;
+      bool first = true;
+      for (int j = 0; j < mi; j++) {
+        if (!c->methods[j].isCtor && strcmp(c->methods[j].name, mm->name) == 0) {
+          first = false;
+          break;
+        }
+      }
+      if (!first) continue;
+      int count = 0;
+      for (int j = 0; j < c->nmethods; j++) {
+        if (!c->methods[j].isCtor && strcmp(c->methods[j].name, mm->name) == 0) count++;
+      }
+      if (count > 1) {
+        bool arityDone[32] = {false};
+        for (int j = 0; j < c->nmethods; j++) {
+          if (!c->methods[j].isCtor && strcmp(c->methods[j].name, mm->name) == 0) {
+            int a = c->methods[j].nparams;
+            if (a < 32 && !arityDone[a]) {
+              arityDone[a] = true;
+              emit_method_dispatch_macro(c, mm->name, a);
+            }
+          }
+        }
+        printf("#define %s_%s(self, ...) _PDE_CONCAT(%s_%s_, _PDE_NARGS(__VA_ARGS__))(self, ##__VA_ARGS__)\n",
+               c->name, mm->name, c->name, mm->name);
       }
     }
     printf("\n");
@@ -1550,7 +2570,9 @@ static void emit_class_definitions(void) {
     for (int mi = 0; mi < c->nmethods; mi++) {
       const ClassMethod *mm = &c->methods[mi];
       if (mm->isCtor) {
-        printf("\n%s %s_ctor(%s) {\n", c->name, c->name,
+        char ctorName[MAX_TOKEN_TEXT];
+        get_ctor_name(c, mi, ctorName, sizeof(ctorName));
+        printf("\n%s %s(%s) {\n", c->name, ctorName,
                mm->params[0] ? mm->params : "void");
         printf("  %s __self = {0};\n", c->name);
         printf("  %s *self = &__self;\n", c->name);
@@ -1564,7 +2586,9 @@ static void emit_class_definitions(void) {
         if (mm->nbody > 0) emit_class_body(c, mm, mm->body, mm->nbody);
         printf("  return __self;\n}\n\n");
       } else {
-        printf("\n%s %s_%s(%s *self%s%s) {\n", mm->ret, c->name, mm->name, c->name,
+        char methName[MAX_TOKEN_TEXT];
+        get_method_name(c, mi, methName, sizeof(methName));
+        printf("\n%s %s(%s *self%s%s) {\n", mm->ret, methName, c->name,
                mm->params[0] ? ", " : "", mm->params[0] ? mm->params : "");
         if (mm->nbody > 0) emit_class_body(c, mm, mm->body, mm->nbody);
         printf("}\n\n");
@@ -1758,6 +2782,16 @@ int tokenize(const char *source, Token **tokens_out, size_t capacity_in) {
         }
         if (source[i] == 'l' || source[i] == 'L')
           tokens[t_count].text[len++] = source[i++];
+        tokens[t_count].text[len] = '\0';
+        // Java allows integer-like float literals without dot: e.g. 150f -> 150.0f
+        if (len > 1 && (tokens[t_count].text[len-1] == 'f' || tokens[t_count].text[len-1] == 'F') &&
+            !strchr(tokens[t_count].text, '.') && len + 2 < MAX_TOKEN_TEXT) {
+          tokens[t_count].text[len-1] = '.';
+          tokens[t_count].text[len] = '0';
+          tokens[t_count].text[len+1] = 'f';
+          tokens[t_count].text[len+2] = '\0';
+          len += 2;
+        }
       }
       tokens[t_count].text[len] = '\0';
       tokens[t_count].line = current_line;
@@ -1910,6 +2944,10 @@ int main(int argc, char *argv[]) {
     free(tokens);
     tokens = r;
     num_tokens = n;
+    n = rewrite_pvector_accessors(tokens, num_tokens, &r);
+    free(tokens);
+    tokens = r;
+    num_tokens = n;
   }
 
   // Phase 6: user-defined classes. Must run BEFORE the name-collision rename
@@ -1938,6 +2976,10 @@ int main(int argc, char *argv[]) {
     n = rewrite_str_assign(tokens, num_tokens, &r);
     free(tokens); tokens = r; num_tokens = n;
     n = rewrite_str_cmp(tokens, num_tokens, &r);
+    free(tokens); tokens = r; num_tokens = n;
+    n = rewrite_gl_calls(tokens, num_tokens, &r);
+    free(tokens); tokens = r; num_tokens = n;
+    n = rewrite_array_length(tokens, num_tokens, &r);
     free(tokens); tokens = r; num_tokens = n;
   }
 
@@ -2003,10 +3045,41 @@ int main(int argc, char *argv[]) {
   // Print framework header (pack_color lives in processing.h, arity-routed)
   printf("#include \"processing.h\"\n\n");
 
+  // If the sketch declares global variables that clash with standard Processing
+  // mode macros (e.g. float RADIUS), undefine them so the sketch variable is valid.
+  {
+    static const char *const _clashable_constants[] = {
+      "RADIUS", "CORNER", "CORNERS", "CENTER", NULL
+    };
+    for (int c = 0; _clashable_constants[c] != NULL; c++) {
+      for (int g = 0; g < _nglob; g++) {
+        if (strcmp(_globnames[g], _clashable_constants[c]) == 0) {
+          printf("#undef %s\n", _clashable_constants[c]);
+          break;
+        }
+      }
+    }
+  }
+
   // Phase 6: user-class structs + method prototypes, emitted up front so the
   // sketch globals/body (printed below) can refer to `new Class(...)` and
   // `obj.method(...)` before the definitions appear in the postlude.
   emit_class_typedefs_and_protos();
+
+  // Forward declarations for multi-tab globals
+  for (int g = 0; g < _nglob; g++) {
+    if (strstr(_globtypes[g], "[]")) {
+      char base[MAX_TOKEN_TEXT];
+      snprintf(base, sizeof(base), "%s", _globtypes[g]);
+      char *brk = strstr(base, "[]");
+      if (brk) *brk = '\0';
+      while (strlen(base) > 0 && base[strlen(base)-1] == ' ') base[strlen(base)-1] = '\0';
+      printf("extern %s %s[];\n", base, _globnames[g]);
+    } else {
+      printf("extern %s %s;\n", _globtypes[g], _globnames[g]);
+    }
+  }
+  printf("\n");
 
   // ---- forward declaration pre-scan -------------------------------------
   // Scan for "TYPE NAME(params) {" definitions and emit C prototypes so
@@ -2175,6 +3248,9 @@ int main(int argc, char *argv[]) {
         if (tokens[u].type == TOKEN_SYMBOL &&
             strcmp(tokens[u].text, "(") == 0)
           hasCall = true;
+        if (tokens[u].type == TOKEN_IDENTIFIER &&
+            strcmp(tokens[u].text, "new") == 0)
+          hasCall = true;
       }
       if (!hasCall) continue;
       for (int u = r; u < initEnd; u++) skipInit[u] = true;
@@ -2222,6 +3298,65 @@ int main(int argc, char *argv[]) {
             }
             u += 2;
             continue;
+          }
+          // new TYPE[d1]... -> _pde_array*_new(...)
+          if (tokens[u].type == TOKEN_IDENTIFIER &&
+              strcmp(tokens[u].text, "new") == 0 &&
+              u + 2 < initEnd &&
+              tokens[u+2].type == TOKEN_SYMBOL &&
+              strcmp(tokens[u+2].text, "[") == 0) {
+            const char *elemType = emit_c_type_str(tokens[u+1].text);
+            int dimStarts[4], dimEnds[4];
+            int nDims = 0;
+            int cur = u + 2;
+            while (nDims < 4 && cur < initEnd &&
+                   tokens[cur].type == TOKEN_SYMBOL && strcmp(tokens[cur].text, "[") == 0) {
+              int depth = 1, s = cur + 1, e = s;
+              while (e < initEnd && depth > 0) {
+                if (tokens[e].type == TOKEN_SYMBOL && strcmp(tokens[e].text, "[") == 0) depth++;
+                else if (tokens[e].type == TOKEN_SYMBOL && strcmp(tokens[e].text, "]") == 0) depth--;
+                if (depth == 0) break;
+                e++;
+              }
+              if (depth == 0) {
+                dimStarts[nDims] = s;
+                dimEnds[nDims] = e;
+                nDims++;
+                cur = e + 1;
+              } else break;
+            }
+            if (nDims > 0) {
+              char buf[256];
+              int blen = 0;
+              if (nDims == 1)      blen = snprintf(buf, sizeof(buf), "(%s *)_pde_array_new(", elemType);
+              else if (nDims == 2) blen = snprintf(buf, sizeof(buf), "(%s **)_pde_array2d_new(", elemType);
+              else if (nDims == 3) blen = snprintf(buf, sizeof(buf), "(%s ***)_pde_array3d_new(", elemType);
+              else                 blen = snprintf(buf, sizeof(buf), "(%s *)_pde_array_new(", elemType);
+              if (pos + blen < 512) { memcpy(initTexts[nInitTexts] + pos, buf, blen); pos += blen; }
+              for (int d = 0; d < nDims; d++) {
+                if (d > 0 && pos + 2 < 512) { memcpy(initTexts[nInitTexts] + pos, ", ", 2); pos += 2; }
+                for (int t = dimStarts[d]; t < dimEnds[d]; t++) {
+                  int tlen = (int)strlen(tokens[t].text);
+                  if (tokens[t].type == TOKEN_IDENTIFIER && t + 2 < dimEnds[d] &&
+                      tokens[t+1].type == TOKEN_DOT && strcmp(tokens[t+2].text, "length") == 0) {
+                    char lbuf[64];
+                    int llen = snprintf(lbuf, sizeof(lbuf), "_pde_len(%s)", tokens[t].text);
+                    if (pos + llen < 512) { memcpy(initTexts[nInitTexts] + pos, lbuf, llen); pos += llen; }
+                    t += 2;
+                  } else {
+                    if (pos + tlen < 512) { memcpy(initTexts[nInitTexts] + pos, tokens[t].text, tlen); pos += tlen; }
+                  }
+                  if (t + 1 < dimEnds[d] && pos + 1 < 512) { initTexts[nInitTexts][pos++] = ' '; }
+                }
+              }
+              char endbuf[64];
+              int elen = snprintf(endbuf, sizeof(endbuf), ", sizeof(%s))", elemType);
+              if (pos + elen < 512) { memcpy(initTexts[nInitTexts] + pos, endbuf, elen); pos += elen; }
+              initTexts[nInitTexts][pos++] = ' ';
+              initTexts[nInitTexts][pos] = '\0';
+              u = dimEnds[nDims - 1];
+              continue;
+            }
           }
           // color(...) → pack_color(...)
           if (tokens[u].type == TOKEN_KEYWORD &&
@@ -2390,76 +3525,128 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    // 1. Array declarations "TYPE[] name":
+    // 1. Array declarations "TYPE[]... name" (multi-dimensional: TYPE[][] name, etc.):
     //    - "= {" literal init stays C-style:  TYPE name[] = {
-    //    - otherwise pointer style (heap ref): TYPE *name
-    if (is_type_token(current) &&
-        (i + 3 < num_tokens) &&
-        tokens[i+1].type == TOKEN_SYMBOL && strcmp(tokens[i+1].text, "[") == 0 &&
-        tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "]") == 0 &&
-        tokens[i+3].type == TOKEN_IDENTIFIER)
+    //    - otherwise pointer style (heap ref): TYPE *name, TYPE **name, etc.
     {
-      const char *type_out = current.text;
-      if (strcmp(type_out, "boolean") == 0) type_out = "bool";
-      if (strcmp(type_out, "color") == 0) type_out = "uint32_t";
-      bool braceInit = (i + 6 < num_tokens &&
-                        tokens[i+4].type == TOKEN_OPERATOR && strcmp(tokens[i+4].text, "=") == 0 &&
-                        tokens[i+5].type == TOKEN_SYMBOL && strcmp(tokens[i+5].text, "{") == 0);
-      if (braceInit) printf("%s %s[] = {", type_out, tokens[i+3].text);
-      else           printf("%s *%s", type_out, tokens[i+3].text);
-      i += braceInit ? 6 : 4;
-      // additional Java declarators in the same statement: "TYPE a[], b[], c;"
-      // array ones become extra pointers; plain scalars fall back to default
-      while (!braceInit &&
-             (i + 3 < num_tokens) &&
-             tokens[i].type == TOKEN_SYMBOL && strcmp(tokens[i].text, ",") == 0 &&
-             tokens[i+1].type == TOKEN_IDENTIFIER &&
-             tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "[") == 0 &&
-             tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "]") == 0)
-      {
-        printf(", *%s", tokens[i+1].text);
-        i += 4;
+      int dims = 0;
+      int k = i + 1;
+      while (k + 1 < num_tokens &&
+             tokens[k].type == TOKEN_SYMBOL && strcmp(tokens[k].text, "[") == 0 &&
+             tokens[k+1].type == TOKEN_SYMBOL && strcmp(tokens[k+1].text, "]") == 0) {
+        dims++;
+        k += 2;
       }
-      continue;
+      if (dims > 0 && k < num_tokens && tokens[k].type == TOKEN_IDENTIFIER &&
+          (is_type_token(current) || current.type == TOKEN_IDENTIFIER)) {
+        const char *type_out = emit_c_type_str(current.text);
+        bool braceInit = (dims == 1 && k + 2 < num_tokens &&
+                          tokens[k+1].type == TOKEN_OPERATOR && strcmp(tokens[k+1].text, "=") == 0 &&
+                          tokens[k+2].type == TOKEN_SYMBOL && strcmp(tokens[k+2].text, "{") == 0);
+        if (braceInit) {
+          printf("%s %s[] = {", type_out, tokens[k].text);
+          braceDepth++;
+          i = k + 3;
+        } else {
+          printf("%s ", type_out);
+          for (int d = 0; d < dims; d++) printf("*");
+          printf("%s", tokens[k].text);
+          i = k + 1;
+        }
+        // additional declarators in the same statement: ", *b, *c"
+        while (!braceInit &&
+               (i + 1 < num_tokens) &&
+               tokens[i].type == TOKEN_SYMBOL && strcmp(tokens[i].text, ",") == 0 &&
+               tokens[i+1].type == TOKEN_IDENTIFIER) {
+          int extraDims = 0;
+          int ek = i + 2;
+          while (ek + 1 < num_tokens &&
+                 tokens[ek].type == TOKEN_SYMBOL && strcmp(tokens[ek].text, "[") == 0 &&
+                 tokens[ek+1].type == TOKEN_SYMBOL && strcmp(tokens[ek+1].text, "]") == 0) {
+            extraDims++;
+            ek += 2;
+          }
+          int useDims = (extraDims > 0) ? extraDims : dims;
+          printf(", ");
+          for (int d = 0; d < useDims; d++) printf("*");
+          printf("%s", tokens[i+1].text);
+          i = (extraDims > 0) ? ek : i + 2;
+        }
+        continue;
+      }
     }
 
-    // 1b. Name-first array declarations: "TYPE name[]" (Java allows both
-    //     orders) incl. parameter lists "void f(float arr[], int b[])" and
-    //     declarator lists "TYPE a[], b[];" -> pointers / brace init kept
-    if ((is_type_token(current) ||
-         (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "PVector") == 0)) &&
+    // 1b. Name-first array declarations: "TYPE name[]..."
+    if ((is_type_token(current) || current.type == TOKEN_IDENTIFIER) &&
         (i + 3 < num_tokens) &&
         tokens[i+1].type == TOKEN_IDENTIFIER &&
         tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "[") == 0 &&
         tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "]") == 0)
     {
       const char *type_out = emit_c_type_str(current.text);
-      bool braceInit = (i + 6 < num_tokens &&
-                        tokens[i+4].type == TOKEN_OPERATOR && strcmp(tokens[i+4].text, "=") == 0 &&
-                        tokens[i+5].type == TOKEN_SYMBOL && strcmp(tokens[i+5].text, "{") == 0);
-      if (braceInit) printf("%s %s[] = {", type_out, tokens[i+1].text);
-      else           printf("%s *%s", type_out, tokens[i+1].text);
-      i += braceInit ? 6 : 4;
-      // further declarators: ", b[]" (same type) or ", float b[]" (retyped,
-      // happens in parameter lists)
+      int dims = 0;
+      int k = i + 2;
+      while (k + 1 < num_tokens &&
+             tokens[k].type == TOKEN_SYMBOL && strcmp(tokens[k].text, "[") == 0 &&
+             tokens[k+1].type == TOKEN_SYMBOL && strcmp(tokens[k+1].text, "]") == 0) {
+        dims++;
+        k += 2;
+      }
+      bool braceInit = (dims == 1 && k + 1 < num_tokens &&
+                        tokens[k].type == TOKEN_OPERATOR && strcmp(tokens[k].text, "=") == 0 &&
+                        tokens[k+1].type == TOKEN_SYMBOL && strcmp(tokens[k+1].text, "{") == 0);
+      if (braceInit) {
+        printf("%s %s[] = {", type_out, tokens[i+1].text);
+        braceDepth++;
+        i = k + 2;
+      } else {
+        printf("%s ", type_out);
+        for (int d = 0; d < dims; d++) printf("*");
+        printf("%s", tokens[i+1].text);
+        i = k;
+      }
+      // further declarators: ", b[]" or ", float b[]"
       while (!braceInit &&
-             (i + 3 < num_tokens) &&
+             (i + 1 < num_tokens) &&
              tokens[i].type == TOKEN_SYMBOL && strcmp(tokens[i].text, ",") == 0)
       {
-        bool retyped = is_type_token(tokens[i+1]) ||
-                       (tokens[i+1].type == TOKEN_IDENTIFIER &&
-                        strcmp(tokens[i+1].text, "PVector") == 0);
+        bool retyped = is_type_token(tokens[i+1]);
         int nameIdx = retyped ? i + 2 : i + 1;
-        if (tokens[nameIdx].type != TOKEN_IDENTIFIER) break;
-        if (!(tokens[nameIdx+1].type == TOKEN_SYMBOL &&
-              strcmp(tokens[nameIdx+1].text, "[") == 0 &&
-              tokens[nameIdx+2].type == TOKEN_SYMBOL &&
-              strcmp(tokens[nameIdx+2].text, "]") == 0)) break;
-        if (retyped) printf(", %s *%s", emit_c_type_str(tokens[i+1].text), tokens[nameIdx].text);
-        else         printf(", *%s", tokens[nameIdx].text);
-        i = nameIdx + 3;
+        if (nameIdx >= num_tokens || tokens[nameIdx].type != TOKEN_IDENTIFIER) break;
+        int d2 = 0;
+        int k2 = nameIdx + 1;
+        while (k2 + 1 < num_tokens &&
+               tokens[k2].type == TOKEN_SYMBOL && strcmp(tokens[k2].text, "[") == 0 &&
+               tokens[k2+1].type == TOKEN_SYMBOL && strcmp(tokens[k2+1].text, "]") == 0) {
+          d2++;
+          k2 += 2;
+        }
+        if (d2 == 0) d2 = dims;
+        if (retyped) {
+          printf(", %s ", emit_c_type_str(tokens[i+1].text));
+          for (int d = 0; d < d2; d++) printf("*");
+          printf("%s", tokens[nameIdx].text);
+        } else {
+          printf(", ");
+          for (int d = 0; d < d2; d++) printf("*");
+          printf("%s", tokens[nameIdx].text);
+        }
+        i = k2;
       }
       continue;
+    }
+
+    // super.method(...) -> ((void)0)
+    if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "super") == 0 &&
+        i + 3 < num_tokens && tokens[i + 1].type == TOKEN_DOT &&
+        tokens[i + 2].type == TOKEN_IDENTIFIER &&
+        tokens[i + 3].type == TOKEN_SYMBOL && strcmp(tokens[i + 3].text, "(") == 0) {
+      int close = matching_close(tokens, num_tokens, i + 3, "(", ")");
+      if (close > i + 3) {
+        printf("((void)0)");
+        i = close + 1;
+        continue;
+      }
     }
 
     // 2. Normalize pointer-to-literal array initialization: "int* mm = {" -> "int mm[] = {"
@@ -2474,6 +3661,7 @@ int main(int argc, char *argv[]) {
       if (strcmp(type_out, "boolean") == 0) type_out = "bool";
       if (strcmp(type_out, "color") == 0) type_out = "uint32_t";
       printf("%s %s[] = {", type_out, tokens[i+2].text);
+      braceDepth++;
       i += 5;
       continue;
     }
@@ -2601,6 +3789,13 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
+    // 3e2. Java this literal outside classes -> NULL
+    if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "this") == 0) {
+      printf("NULL");
+      i++;
+      continue;
+    }
+
     // 3e2. String[] array declarations -> const char **name (pointer form,
     //      like the "TYPE[] name" -> "TYPE *name" rewrite for primitives)
     if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "String") == 0 &&
@@ -2611,6 +3806,43 @@ int main(int argc, char *argv[]) {
     {
       printf("const char **%s", tokens[i+3].text);
       i += 4;
+      continue;
+    }
+
+    // 3e3. `(Type[])` array cast -> `(Type *)`
+    if (current.type == TOKEN_SYMBOL && strcmp(current.text, "(") == 0 &&
+        i + 4 < num_tokens && is_plausible_type_token(tokens[i + 1]) &&
+        tokens[i + 2].type == TOKEN_SYMBOL && strcmp(tokens[i + 2].text, "[") == 0 &&
+        tokens[i + 3].type == TOKEN_SYMBOL && strcmp(tokens[i + 3].text, "]") == 0 &&
+        tokens[i + 4].type == TOKEN_SYMBOL && strcmp(tokens[i + 4].text, ")") == 0) {
+      const char *cty = emit_c_type_str(tokens[i + 1].text);
+      if (strcmp(cty, "const char *") == 0)
+        printf("(const char **)");
+      else
+        printf("(%s *)", cty);
+      i += 4;
+      continue;
+    }
+
+    // 3e4. `(PGraphics3D) expr` -> `_pde_as_pgraphics3d(expr)`
+    if (current.type == TOKEN_SYMBOL && strcmp(current.text, "(") == 0 &&
+        i + 3 < num_tokens && strcmp(tokens[i + 1].text, "PGraphics3D") == 0 &&
+        tokens[i + 2].type == TOKEN_SYMBOL && strcmp(tokens[i + 2].text, ")") == 0 &&
+        tokens[i + 3].type == TOKEN_IDENTIFIER) {
+      printf("_pde_as_pgraphics3d(%s)", tokens[i + 3].text);
+      i += 4;
+      continue;
+    }
+
+    // 3e5. `(PGraphics...)` struct cast stripping -> skip the cast parens & type
+    if (current.type == TOKEN_SYMBOL && strcmp(current.text, "(") == 0 &&
+        i + 2 < num_tokens &&
+        (strcmp(tokens[i + 1].text, "PGraphics") == 0 ||
+         strcmp(tokens[i + 1].text, "PGraphicsOpenGL") == 0 ||
+         strcmp(tokens[i + 1].text, "PGraphicsPDF") == 0 ||
+         strcmp(tokens[i + 1].text, "PGraphics2D") == 0) &&
+        tokens[i + 2].type == TOKEN_SYMBOL && strcmp(tokens[i + 2].text, ")") == 0) {
+      i += 3;
       continue;
     }
 
@@ -2643,8 +3875,7 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    // 5b. Transform "new TYPE[n]" -> "(TYPE *)_pde_array_new(n, sizeof(TYPE))"
-    // (PVector constructor form handled above; this is the array form)
+    // 5b. Transform "new TYPE[d1]..." -> "(TYPE *)_pde_array*_new(d1, ..., sizeof(TYPE))"
     if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "new") == 0 &&
         (i + 3 < num_tokens) &&
         (tokens[i+1].type == TOKEN_IDENTIFIER || tokens[i+1].type == TOKEN_KEYWORD) &&
@@ -2652,27 +3883,74 @@ int main(int argc, char *argv[]) {
         !(tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "]") == 0))
     {
       const char *elemType = emit_c_type_str(tokens[i+1].text);
-      snprintf(lastArrayType, sizeof(lastArrayType), "%s", elemType);
-      printf("(%s *)_pde_array_new(", elemType);
-      pendingBracketClose++;
-      pendingCallocType = true; // closing "]" emits ", sizeof(TYPE))"
-      i += 3;
-      continue;
+      int dimStarts[4], dimEnds[4];
+      int nDims = 0;
+      int cur = i + 2;
+      while (nDims < 4 && cur < num_tokens &&
+             tokens[cur].type == TOKEN_SYMBOL && strcmp(tokens[cur].text, "[") == 0) {
+        int depth = 1, s = cur + 1, e = s;
+        while (e < num_tokens && depth > 0) {
+          if (tokens[e].type == TOKEN_SYMBOL && strcmp(tokens[e].text, "[") == 0) depth++;
+          else if (tokens[e].type == TOKEN_SYMBOL && strcmp(tokens[e].text, "]") == 0) depth--;
+          if (depth == 0) break;
+          e++;
+        }
+        if (depth == 0) {
+          dimStarts[nDims] = s;
+          dimEnds[nDims] = e;
+          nDims++;
+          cur = e + 1;
+        } else break;
+      }
+      if (nDims > 0) {
+        if (nDims == 1)      printf("(%s *)_pde_array_new(", elemType);
+        else if (nDims == 2) printf("(%s **)_pde_array2d_new(", elemType);
+        else if (nDims == 3) printf("(%s ***)_pde_array3d_new(", elemType);
+        else                 printf("(%s *)_pde_array_new(", elemType);
+        for (int d = 0; d < nDims; d++) {
+          if (d > 0) printf(", ");
+          for (int t = dimStarts[d]; t < dimEnds[d]; t++) {
+            if (tokens[t].type == TOKEN_IDENTIFIER &&
+                t + 2 < dimEnds[d] &&
+                tokens[t+1].type == TOKEN_DOT &&
+                tokens[t+2].type == TOKEN_IDENTIFIER &&
+                strcmp(tokens[t+2].text, "length") == 0) {
+              printf("_pde_len(%s)", tokens[t].text);
+              t += 2;
+            } else {
+              printf("%s", tokens[t].text);
+            }
+            if (t + 1 < dimEnds[d]) printf(" ");
+          }
+        }
+        printf(", sizeof(%s))", elemType);
+        i = dimEnds[nDims - 1] + 1;
+        continue;
+      }
     }
 
-    // closing "]" of an array allocation becomes ")"
-    if (pendingBracketClose > 0 &&
-        current.type == TOKEN_SYMBOL && strcmp(current.text, "]") == 0)
+    // 5c. Java array cast: "(TYPE[])" / "(TYPE[][])" -> "(TYPE *)" / "(TYPE **)"
+    if (current.type == TOKEN_SYMBOL && strcmp(current.text, "(") == 0 &&
+        i + 3 < num_tokens &&
+        (is_type_token(tokens[i+1]) || tokens[i+1].type == TOKEN_IDENTIFIER))
     {
-      if (pendingCallocType) {
-        printf(", sizeof(%s))", lastArrayType);
-        pendingCallocType = false;
-      } else {
-        printf(")");
+      int dims = 0;
+      int k = i + 2;
+      while (k + 1 < num_tokens &&
+             tokens[k].type == TOKEN_SYMBOL && strcmp(tokens[k].text, "[") == 0 &&
+             tokens[k+1].type == TOKEN_SYMBOL && strcmp(tokens[k+1].text, "]") == 0) {
+        dims++;
+        k += 2;
       }
-      pendingBracketClose--;
-      i++;
-      continue;
+      if (dims > 0 && k < num_tokens &&
+          tokens[k].type == TOKEN_SYMBOL && strcmp(tokens[k].text, ")") == 0) {
+        const char *castType = emit_c_type_str(tokens[i+1].text);
+        printf("(%s ", castType);
+        for (int d = 0; d < dims; d++) printf("*");
+        printf(")");
+        i = k + 1;
+        continue;
+      }
     }
 
     // 6. Map boolean keyword (type OR conversion cast: boolean(x) routes through
@@ -2763,53 +4041,6 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    // 8. PVector object method rewriting (table-driven)
-    //    mutators: v.add(w)      -> v = pvector_add(v, w)
-    //    accessors: v.mag()      -> pvector_mag(v)
-    if (current.type == TOKEN_IDENTIFIER &&
-        (i + 3 < num_tokens) &&
-        tokens[i+1].type == TOKEN_DOT &&
-        tokens[i+2].type == TOKEN_IDENTIFIER &&
-        tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "(") == 0)
-    {
-      const char *obj = current.text;
-      const char *method = tokens[i+2].text;
-
-      if (strcmp(obj, "PVector") == 0 && strcmp(method, "fromAngle") == 0) {
-        printf("pvector_fromAngle(");
-        i += 4;
-        continue;
-      }
-
-      char objName[MAX_TOKEN_TEXT];
-      strcpy(objName, obj);
-
-      // generic: only rewrite when the method is part of the PVector API
-      if ((pvector_mutator_method(method) || pvector_accessor_method(method))) {
-        if (pvector_mutator_method(method)) {
-          printf("%s = pvector_%s(%s, ", objName, method, objName);
-        } else {
-          printf("pvector_%s(%s, ", method, objName);
-        }
-        i += 4;
-        continue;
-      }
-    }
-
-    // 8b. Java array .length -> _pde_len(name): exact count for brace-initialized
-    //     true arrays (via _Generic array branch) AND heap arrays allocated by
-    //     _pde_array_new/expand (via registry lookup).
-    if (current.type == TOKEN_IDENTIFIER &&
-        (i + 2 < num_tokens) &&
-        tokens[i+1].type == TOKEN_DOT &&
-        tokens[i+2].type == TOKEN_IDENTIFIER &&
-        strcmp(tokens[i+2].text, "length") == 0)
-    {
-      printf("_pde_len(%s)", current.text);
-      i += 3;
-      continue;
-    }
-
     // 8a. ArrayList member ops on registered receivers (sketch globals +
     //     function locals): list.add(x) -> _pde_ag_add(list, x). Ahead of
     //     both the PVector table (so `list.add(...)` is not pvector_add) and
@@ -2830,18 +4061,92 @@ int main(int argc, char *argv[]) {
       }
     }
 
+    // Minim.CONSTANT -> CONSTANT
+    if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "Minim") == 0 &&
+        i + 1 < num_tokens && tokens[i + 1].type == TOKEN_DOT) {
+      i += 1;
+      continue;
+    }
+
     // 8. PVector object method rewriting (table-driven)
     //    mutators: v.add(w)      -> v = pvector_add(v, w)
     //    accessors: v.mag()      -> pvector_mag(v)
+    //    static: PVector.add(..) -> pvector_add(..)
+    if (current.type == TOKEN_IDENTIFIER &&
+        (i + 3 < num_tokens) &&
+        tokens[i+1].type == TOKEN_DOT &&
+        tokens[i+2].type == TOKEN_IDENTIFIER &&
+        tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "(") == 0)
+    {
+      const char *obj = current.text;
+      const char *method = tokens[i+2].text;
+
+      if (strcmp(obj, "PVector") == 0) {
+        printf("pvector_%s(", method);
+        i += 3;
+        continue;
+      }
+
+      const char *objTy = symbol_type(obj);
+      if (objTy && strcmp(objTy, "PVector") != 0) {
+        // Not a PVector; do not hijack member calls on other types
+      } else {
+        char objName[MAX_TOKEN_TEXT];
+        strcpy(objName, obj);
+
+        if (pvector_mutator_method(method) || pvector_accessor_method(method)) {
+          bool zeroArg = (i + 4 < num_tokens && tokens[i+4].type == TOKEN_SYMBOL &&
+                          strcmp(tokens[i+4].text, ")") == 0);
+          // PVector add/sub require arguments; zero-arg add() belongs to user classes
+          if (zeroArg && (strcmp(method, "add") == 0 || strcmp(method, "sub") == 0)) {
+            // not a zero-arg PVector call
+          } else if (zeroArg) {
+            if (pvector_mutator_method(method))
+              printf("%s = pvector_%s(%s)", objName, method, objName);
+            else
+              printf("pvector_%s(%s)", method, objName);
+            i += 4;
+            continue;
+          } else {
+            if (pvector_mutator_method(method))
+              printf("%s = pvector_%s(%s, ", objName, method, objName);
+            else
+              printf("pvector_%s(%s, ", method, objName);
+            i += 3;
+            continue;
+          }
+        }
+      }
+    }
+
+    // 8b. Java array .length -> _pde_len(name): exact count for brace-initialized
+    //     true arrays (via _Generic array branch) AND heap arrays allocated by
+    //     _pde_array_new/expand (via registry lookup).
+    if (current.type == TOKEN_IDENTIFIER &&
+        (i + 2 < num_tokens) &&
+        tokens[i+1].type == TOKEN_DOT &&
+        tokens[i+2].type == TOKEN_IDENTIFIER &&
+        strcmp(tokens[i+2].text, "length") == 0)
+    {
+      printf("_pde_len(%s)", current.text);
+      i += 3;
+      continue;
+    }
     // 8c2. PImage member operations: img.op(...) / img.pixels rewritten to
     //     pimage_* helpers taking &receiver; dot-keyed so bare canvas calls
     //     (loadPixels(), updatePixels()) are untouched
     if (current.type == TOKEN_IDENTIFIER &&
+        (i == 0 || tokens[i - 1].type != TOKEN_DOT) &&
         (i + 2 < num_tokens) &&
         tokens[i+1].type == TOKEN_DOT &&
         tokens[i+2].type == TOKEN_IDENTIFIER)
     {
-      const char *op = tokens[i+2].text;
+      const char *recvTy = symbol_type(current.text);
+      if (recvTy && strcmp(recvTy, "PImage") != 0 && strcmp(recvTy, "PGraphics") != 0 &&
+          strcmp(recvTy, "PImage *") != 0 && strcmp(recvTy, "PGraphics *") != 0) {
+        // Not a PImage; do not hijack member calls on other types
+      } else {
+        const char *op = tokens[i+2].text;
       const char *helper = NULL; bool takesArgs = false, mapsFilterConsts = false;
       bool byVal = false; // PGraphics ops take the canvas by value
       if (strcmp(op, "loadPixels") == 0) helper = "pimage_loadPixels";
@@ -2958,6 +4263,7 @@ int main(int argc, char *argv[]) {
         i = j;
         continue;
       }
+      }
       not_pimage_op:;
     }
 
@@ -3057,7 +4363,7 @@ int main(int argc, char *argv[]) {
 
     // brace depth drives labeled-break target placement ("} __lbl_brk: ;")
     if (current.type == TOKEN_SYMBOL && strcmp(current.text, "}") == 0) {
-      braceDepth--;
+      if (braceDepth > 0) braceDepth--;
       while (labelCount > 0 && labelStack[labelCount-1].depth == braceDepth) {
         printf("\n__%s_brk: ;", labelStack[--labelCount].name);
       }

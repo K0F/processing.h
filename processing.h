@@ -4,7 +4,9 @@
 #define _VERSION_ "0.1"
 
 #include <stdio.h>
+#define Camera RaylibCamera
 #include "raylib.h"
+#undef Camera
 #include "rlgl.h"
 #include "raymath.h"
 #include <stddef.h>
@@ -14,6 +16,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <math.h>
+#define null NULL
 #ifdef _WIN32
 #include <io.h>
 #include <windows.h>
@@ -29,6 +32,20 @@
 // NOTE: <time.h> intentionally not included: sketches often declare a global
 // named "time", which would collide with time(). <sys/time.h>/GetSystemTime
 // provide the current time without declaring any symbol named "time".
+
+// Aliases for POSIX / C library functions that collide with common sketch variable names
+#define index _pde_user_index
+#define div   _pde_user_div
+#define y0    _pde_user_y0
+#define y1    _pde_user_y1
+#define j0    _pde_user_j0
+#define j1    _pde_user_j1
+
+#define _PDE_ARG_N(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, N, ...) N
+#define _PDE_NARGS(...) _PDE_ARG_N(0, ##__VA_ARGS__, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+#define _PDE_CONCAT_2(a, b) a ## b
+#define _PDE_CONCAT(a, b) _PDE_CONCAT_2(a, b)
+#define super(...) ((void)0)
 
 // FreeType is used to load Terminus's EMBEDDED bitmap strikes so the running
 // sketch renders its default font exactly like the pixel-crisp editor font.
@@ -58,6 +75,19 @@
 #define QUARTER_PI 0.78539816339744830961f
 #endif
 
+#ifndef MAX_INT
+#define MAX_INT 2147483647
+#endif
+#ifndef MIN_INT
+#define MIN_INT (-2147483647 - 1)
+#endif
+#ifndef MAX_FLOAT
+#define MAX_FLOAT 3.40282347E+38f
+#endif
+#ifndef MIN_FLOAT
+#define MIN_FLOAT (-3.40282347E+38f)
+#endif
+
 // Processing constants (mirror PValues from PConstants)
 #define CODED 65535
 #define UNDEFINED (-1)
@@ -69,11 +99,23 @@
 #define OPENGL 2
 #define PDF 3
 enum {
-  CORNER = 0,
-  CORNERS = 1,
-  RADIUS = 2,
-  CENTER = 3
+  _PDE_CORNER = 0,
+  _PDE_CORNERS = 1,
+  _PDE_RADIUS = 2,
+  _PDE_CENTER = 3
 };
+#ifndef CORNER
+#define CORNER _PDE_CORNER
+#endif
+#ifndef CORNERS
+#define CORNERS _PDE_CORNERS
+#endif
+#ifndef RADIUS
+#define RADIUS _PDE_RADIUS
+#endif
+#ifndef CENTER
+#define CENTER _PDE_CENTER
+#endif
 enum {
   LEFT = 37,
   UP = 38,
@@ -112,6 +154,10 @@ enum {
 
 static int width = 814;
 static int height = 576;
+typedef struct { int width; int height; } _Pde_Screen;
+static _Pde_Screen screen = { 1024, 768 };
+static int displayWidth = 1024;
+static int displayHeight = 768;
 static int mouseX = 0;
 static int mouseY = 0;
 static int pmouseX = 0;
@@ -121,6 +167,23 @@ static bool mousePressed = false;
 
 typedef Font PFont;
 typedef RenderTexture2D PGraphics;
+typedef void *PApplet;
+typedef PGraphics PGraphicsOpenGL;
+typedef PGraphics PGraphicsPDF;
+typedef PGraphics PGraphics2D;
+
+#include <GL/gl.h>
+
+typedef void *GL;
+typedef void *GLU;
+typedef void *GLSL;
+typedef void *GLAutoDrawable;
+
+static inline void *_pde_pgl_beginGL(void) { return NULL; }
+static inline void _pde_pgl_endGL(void) {}
+static inline void _pde_gl_setSwapInterval(int interval) { (void)interval; }
+static inline void beginGL(void) {}
+static inline void endGL(void) {}
 
 static PFont _currentFont;
 static float _textSizeState = 12.0f;
@@ -133,8 +196,8 @@ static bool _useStroke = true;
 static float _strokeW = 1.0f;
 static int _strokeCap = ROUND;
 static int _strokeJoin = MITER;
-static int _rectModeState = CORNER;
-static int _ellipseModeState = CORNER;
+static int _rectModeState = _PDE_CORNER;
+static int _ellipseModeState = _PDE_CORNER;
 static int _textAlignState = LEFT;
 
 // input state ///////////////////////////////////////////////////////////
@@ -185,6 +248,7 @@ int frameCount = 0;
 Color *pixels = NULL;
 static Texture2D _pixelsTexture;
 static RenderTexture2D _canvas;
+static PGraphics g;
 
 // macros ////////////////////////////////////////////////////////////////
 // str(..): with one arg, convert numbers to text and pass strings through;
@@ -274,7 +338,9 @@ static inline uint32_t pack_color4(float r, float g, float b, float a) {
 #define noiseDetail(...) NOISEDETAIL_CHOOSER(__VA_ARGS__, noiseDetail2, noiseDetail1)(__VA_ARGS__)
 
 // SHAPE DISPATCH: beginShape()/endShape()/endShape(CLOSE)
-// (zero-arg form resolved by pde2c -> beginShape0/endShape0)
+#define _PDE_SHAPE_DISP(_0, _1, NAME, ...) NAME
+#define beginShape(...) _PDE_SHAPE_DISP(0, ##__VA_ARGS__, beginShape1, beginShape0)(__VA_ARGS__)
+#define endShape(...) _PDE_SHAPE_DISP(0, ##__VA_ARGS__, endShape1, endShape0)(__VA_ARGS__)
 
 // VERTEX
 #define VERTEX_CHOOSER(_1, _2, _3, _4, _5, NAME, ...) NAME
@@ -461,6 +527,10 @@ static inline PFont createFont3(const char *filename, int fontSize, int smooth) 
 // colorMode: only RGB is modeled; calls are accepted and ignored
 #define RGB 1
 #define HSB 2
+#define ARGB 3
+#define ALPHA 4
+static inline void beginRecord(int renderer, const char *filename) { (void)renderer; (void)filename; }
+static inline void endRecord(void) {}
 static inline void colorMode1(int mode) { (void)mode; }
 static inline void colorMode2(int mode, float max1) { (void)mode; (void)max1; }
 static inline void colorMode3(int mode, float max1, float max2) { (void)mode; (void)max1; (void)max2; }
@@ -553,7 +623,7 @@ static inline void text_str(const char *format, float x, float y, ...) {
     float offsetX = 0.0f;
     if (_textAlignState == RIGHT) {
       offsetX = -MeasureTextEx(_currentFont, text_buffer, (float)((int)_textSizeState), _textSpacing).x;
-    } else if (_textAlignState == CENTER) {
+    } else if (_textAlignState == _PDE_CENTER) {
       offsetX = -MeasureTextEx(_currentFont, text_buffer, (float)((int)_textSizeState), _textSpacing).x * 0.5f;
     }
 
@@ -796,6 +866,7 @@ static inline void size3(int w, int h, const char *title) {
 
   // offscreen canvas all drawing renders into (Processing PGraphics model)
   _canvas = LoadRenderTexture(w, h);
+  g = _canvas;
   _windowInit = true;
 }
 
@@ -825,7 +896,7 @@ static inline void background2(float grayOrColor, float alpha) {
   }
 }
 
-static inline void background1(uint32_t c) {
+static inline void background1_col(uint32_t c) {
   if (c <= 255) {
     background4(c, c, c, 255);
   } else {
@@ -835,6 +906,11 @@ static inline void background1(uint32_t c) {
     background4(r, g, b, 255);
   }
 }
+
+static inline void background_img(Image img);
+#define background1(A) _Generic((A), \
+    Image: background_img, \
+    default: background1_col)(A)
 
 // loop control /////////////////////////////////////////////////////////////////////////
 
@@ -1328,6 +1404,13 @@ static inline const char *_pde_str_trim(const char *s) { return _pde_trim1(s); }
 // String comparison target for == / != operators.
 #define _pde_str_eq(A, B) _pde_str_equals((A), (B))
 
+static inline bool _pde_is_null_bytes(const void *p, size_t n) {
+  const char *b = (const char *)p;
+  for (size_t i = 0; i < n; i++) if (b[i]) return false;
+  return true;
+}
+#define _pde_is_null(x) _pde_is_null_bytes(&(x), sizeof(x))
+
 // Java expand(): grow an array keeping contents; new tail zero-filled.
 // Sizes are remembered from _pde_array_new so the copy length is known.
 typedef struct { void *ptr; size_t elems; size_t esz; } _PdeArrMeta;
@@ -1384,11 +1467,300 @@ static inline int _pde_arr_len(const void *ptr) {
     __typeof__(A[0])(*)[(sizeof(A) / sizeof((A)[0]))]: (int)(sizeof(A) / sizeof(*(A))), \
     default: _pde_arr_len((const void *)(A)))
 
+#define _PDE_EXPAND_CHOOSER(_1, _2, NAME, ...) NAME
+#define _pde_expand2(arr, newSize) ((typeof(arr))_pde_expand((void **)&(arr), (newSize), sizeof(*(arr))))
+#define _pde_expand1(arr) _pde_expand2(arr, (_pde_len(arr) <= 0 ? 1 : _pde_len(arr) * 2))
+#define expand(...) _PDE_EXPAND_CHOOSER(__VA_ARGS__, _pde_expand2, _pde_expand1)(__VA_ARGS__)
+
 // java.lang.Object stand-in: an empty value class, so `new Object()` and
 // `(Object) list.get(i)` compile. sizeof(Object) is 1 (deviation from Java
 // identity semantics is inherent to the value-copy model).
 typedef struct _PdeObject { char _pde_pad; } Object;
 static inline Object Object_ctor(void) { return (Object){0}; }
+
+#ifndef public
+#define public
+#endif
+#ifndef private
+#define private
+#endif
+#ifndef protected
+#define protected
+#endif
+#ifndef final
+#define final
+#endif
+
+// Processing hint() stubs
+#define ENABLE_OPENGL_4X_SMOOTH 1
+#define DISABLE_OPENGL_2X_SMOOTH 2
+#define ENABLE_DEPTH_TEST 3
+#define DISABLE_DEPTH_TEST 4
+#define ENABLE_ACCURATE_TEXTURES 5
+#define DISABLE_ACCURATE_TEXTURES 6
+static inline void hint(int which) { (void)which; }
+
+// PMatrix3D stub with methods
+typedef struct _Pde_PMatrix3D {
+  Matrix m;
+  struct _Pde_PMatrix3D (*get)(void);
+  void (*mult)(void *src, ...);
+  void (*apply)(struct _Pde_PMatrix3D m, ...);
+  void (*translate)(float x, float y, ...);
+  void (*set)(struct _Pde_PMatrix3D m, ...);
+  void (*invert)(void);
+} PMatrix3D;
+
+static inline PMatrix3D _pde_pmatrix_get(void);
+static inline void _pde_pmatrix_mult(void *src, ...) { (void)src; }
+static inline void _pde_pmatrix_apply(struct _Pde_PMatrix3D m, ...) { (void)m; }
+static inline void _pde_pmatrix_translate(float x, float y, ...) { (void)x; (void)y; }
+static inline void _pde_pmatrix_set(struct _Pde_PMatrix3D m, ...) { (void)m; }
+static inline void _pde_pmatrix_invert(void) {}
+
+static inline PMatrix3D PMatrix3D_ctor(void) {
+  PMatrix3D p;
+  memset(&p, 0, sizeof(p));
+  p.m = MatrixIdentity();
+  p.get = _pde_pmatrix_get;
+  p.mult = _pde_pmatrix_mult;
+  p.apply = _pde_pmatrix_apply;
+  p.translate = _pde_pmatrix_translate;
+  p.set = _pde_pmatrix_set;
+  p.invert = _pde_pmatrix_invert;
+  return p;
+}
+static inline PMatrix3D _pde_pmatrix_get(void) { return PMatrix3D_ctor(); }
+#define PMatrix3D(...) PMatrix3D_ctor()
+
+typedef struct {
+  RenderTexture2D rt;
+  PMatrix3D projection;
+  PMatrix3D camera;
+  PMatrix3D modelview;
+  PMatrix3D modelviewInv;
+} _Pde_PGraphics3D;
+#define PGraphics3D _Pde_PGraphics3D
+
+static inline _Pde_PGraphics3D _pde_as_pgraphics3d(RenderTexture2D rt) {
+  _Pde_PGraphics3D p;
+  memset(&p, 0, sizeof(p));
+  p.rt = rt;
+  p.projection = PMatrix3D_ctor();
+  p.camera = PMatrix3D_ctor();
+  p.modelview = PMatrix3D_ctor();
+  p.modelviewInv = PMatrix3D_ctor();
+  return p;
+}
+
+// PeasyCam library stub
+typedef struct {
+  void (*setMinimumDistance)(double d);
+  void (*setMaximumDistance)(double d);
+  void (*reset)(void);
+} PeasyCam;
+
+static inline void _peasy_noop(double d) { (void)d; }
+static inline void _peasy_reset(void) {}
+
+static inline PeasyCam PeasyCam_ctor_impl(void *parent, ...) {
+  (void)parent;
+  PeasyCam c;
+  c.setMinimumDistance = _peasy_noop;
+  c.setMaximumDistance = _peasy_noop;
+  c.reset = _peasy_reset;
+  return c;
+}
+#define PeasyCam_ctor(...) PeasyCam_ctor_impl(0, ##__VA_ARGS__)
+
+// Ess audio library stub
+typedef struct {
+  bool smoothPan;
+  int size;
+  float bufferStartTime;
+  float duration;
+  float *buffer2;
+  float sampleRate;
+  void (*start)(void);
+  void (*stop)(void);
+} _Pde_AudioStream;
+#define AudioStream _Pde_AudioStream
+
+static inline _Pde_AudioStream AudioStream_ctor(void) {
+  _Pde_AudioStream s;
+  memset(&s, 0, sizeof(s));
+  s.buffer2 = (float *)calloc(1024, sizeof(float));
+  s.size = 1024;
+  s.sampleRate = 44100.0f;
+  s.duration = 1.0f;
+  return s;
+}
+
+typedef struct {
+  void (*filter)(AudioStream s);
+} FadeOut;
+static inline FadeOut FadeOut_ctor(void) { FadeOut f = {0}; return f; }
+#define FadeOut(...) FadeOut_ctor()
+
+typedef struct {
+  void (*filter)(AudioStream s);
+} FadeIn;
+static inline FadeIn FadeIn_ctor(void) { FadeIn f = {0}; return f; }
+#define FadeIn(...) FadeIn_ctor()
+
+typedef struct {
+  int ADD;
+  void (*start)(void *parent);
+  void (*stop)(void);
+} _Pde_Ess;
+static _Pde_Ess Ess = { .ADD = 1, .start = (void *)0, .stop = (void *)0 };
+
+// Minim sound library stub
+typedef struct {
+  float (*get)(int idx);
+} AudioBuffer;
+
+static inline float _ab_get(int idx) { (void)idx; return 0.0f; }
+
+typedef struct {
+  float phase;
+  float frequency;
+  void (*setFreq)(float f);
+  void (*generate)(AudioStream s, ...);
+} SineWave;
+
+static inline void _sw_noop(float f) { (void)f; }
+static inline void _sw_gen(AudioStream s, ...) { (void)s; }
+static inline SineWave SineWave_ctor_impl(float f, ...) {
+  (void)f;
+  SineWave w;
+  memset(&w, 0, sizeof(w));
+  w.setFreq = _sw_noop;
+  w.generate = _sw_gen;
+  return w;
+}
+#define SineWave_ctor(...) SineWave_ctor_impl(0, ##__VA_ARGS__)
+#define SineWave(...) SineWave_ctor(__VA_ARGS__)
+
+static inline void _ap_addsignal(SineWave sig, ...) { (void)sig; }
+
+typedef struct _AudioPlayer {
+  AudioBuffer left;
+  AudioBuffer right;
+  AudioBuffer mix;
+  int (*bufferSize)(void);
+  float (*sampleRate)(void);
+  void (*addSignal)(SineWave sig, ...);
+  void (*play)(void);
+  void (*pause)(void);
+  void (*loop)(void);
+  void (*rewind)(void);
+  void (*close)(void);
+} AudioPlayer;
+
+typedef AudioPlayer AudioInput;
+typedef AudioPlayer AudioSnippet;
+typedef AudioPlayer AudioOutput;
+
+static inline int _ap_bufsize(void) { return 1024; }
+static inline float _ap_samplerate(void) { return 44100.0f; }
+static inline void _ap_void(void) {}
+
+static inline AudioPlayer _ap_init(void) {
+  AudioPlayer ap;
+  memset(&ap, 0, sizeof(ap));
+  ap.left.get = _ab_get;
+  ap.right.get = _ab_get;
+  ap.mix.get = _ab_get;
+  ap.bufferSize = _ap_bufsize;
+  ap.sampleRate = _ap_samplerate;
+  ap.addSignal = _ap_addsignal;
+  ap.play = _ap_void;
+  ap.pause = _ap_void;
+  ap.loop = _ap_void;
+  ap.rewind = _ap_void;
+  ap.close = _ap_void;
+  return ap;
+}
+
+typedef struct {
+  AudioInput (*getLineIn)(int type, ...);
+  AudioOutput (*getLineOut)(int type, ...);
+  AudioPlayer (*loadFile)(const char *path, ...);
+  AudioSnippet (*loadSnippet)(const char *path, ...);
+  void (*stop)(void);
+  void (*debugOn)(void);
+  void (*debugOff)(void);
+} Minim;
+
+static inline AudioInput _minim_linein(int type, ...) { (void)type; return _ap_init(); }
+static inline AudioOutput _minim_lineout(int type, ...) { (void)type; return _ap_init(); }
+static inline AudioPlayer _minim_load(const char *p, ...) { (void)p; return _ap_init(); }
+
+static inline Minim Minim_ctor_impl(void *parent, ...) {
+  (void)parent;
+  Minim m;
+  m.getLineIn = _minim_linein;
+  m.getLineOut = _minim_lineout;
+  m.loadFile = _minim_load;
+  m.loadSnippet = _minim_load;
+  m.stop = _ap_void;
+  m.debugOn = _ap_void;
+  m.debugOff = _ap_void;
+  return m;
+}
+#define Minim_ctor(...) Minim_ctor_impl(0, ##__VA_ARGS__)
+#ifndef STEREO
+#define STEREO 2
+#endif
+#ifndef MONO
+#define MONO 1
+#endif
+
+// Unimotion SMS library stub
+typedef struct {
+  int *(*getSMSArray)(void);
+} _Pde_Unimotion;
+static inline int *_pde_unimotion_sms(void) {
+  static int _sms[3] = {0, 0, 0};
+  return _sms;
+}
+static _Pde_Unimotion Unimotion = { .getSMSArray = _pde_unimotion_sms };
+
+// FullScreen library stub
+typedef struct {
+  void (*enter)(void);
+  void (*leave)(void);
+} FullScreen;
+
+static inline FullScreen FullScreen_ctor_impl(void *parent, ...) {
+  (void)parent;
+  FullScreen fs;
+  fs.enter = _ap_void;
+  fs.leave = _ap_void;
+  return fs;
+}
+#define FullScreen_ctor(...) FullScreen_ctor_impl(0, ##__VA_ARGS__)
+
+// GSMovieMaker library stub
+typedef struct {
+  void (*start)(void);
+  void (*addFrame)(void);
+  void (*finish)(void);
+} GSMovieMaker;
+
+typedef GSMovieMaker MovieMaker;
+
+static inline GSMovieMaker GSMovieMaker_ctor_impl(void *parent, ...) {
+  (void)parent;
+  GSMovieMaker mm;
+  mm.start = _ap_void;
+  mm.addFrame = _ap_void;
+  mm.finish = _ap_void;
+  return mm;
+}
+#define GSMovieMaker_ctor(...) GSMovieMaker_ctor_impl(0, ##__VA_ARGS__)
+#define MovieMaker_ctor(...) GSMovieMaker_ctor_impl(0, ##__VA_ARGS__)
 
 // ArrayList (in-memory subset). Each element is a malloc'ed copy of the
 // original value; `get` returns a void* to that copy so the Processing
@@ -1400,7 +1772,8 @@ typedef struct _PdeArrayList {
 } _PdeArrayListT;
 typedef _PdeArrayListT *ArrayList;
 
-static inline ArrayList _pde_ag_new(void) { return calloc(sizeof(_PdeArrayListT), 1); }
+static inline ArrayList _pde_ag_new_impl(int a, ...) { (void)a; return (ArrayList)calloc(sizeof(_PdeArrayListT), 1); }
+#define _pde_ag_new(...) _pde_ag_new_impl(0, ##__VA_ARGS__)
 
 static inline void *_pde_ag_dup(const void *src, size_t esz) {
   void *p = malloc(esz ? esz : 1);
@@ -1437,12 +1810,29 @@ static inline void _pde_ag_set_fn(ArrayList l, int i, void *elem) {
 #define _pde_ag_set(L, I, X)                                                      \
   _pde_ag_set_fn((L), (I), ({ typeof(X) _pde_v = (X); _pde_ag_dup(&_pde_v, sizeof(X)); }))
 
-static inline void _pde_ag_remove(ArrayList l, int i) {
+static inline void _pde_ag_remove_idx(ArrayList l, int i) {
   if (!l || i < 0 || i >= l->len) return;
   free(l->data[i]);
   for (int k = i; k < l->len - 1; k++) l->data[k] = l->data[k + 1];
   l->len--;
 }
+
+static inline void _pde_ag_remove_obj(ArrayList l, const void *ptr) {
+  if (!l || !ptr) return;
+  for (int i = 0; i < l->len; i++) {
+    if (l->data[i] == ptr) {
+      _pde_ag_remove_idx(l, i);
+      break;
+    }
+  }
+}
+
+#define _pde_ag_remove(l, arg) _Generic((arg), \
+    int: _pde_ag_remove_idx, \
+    short: _pde_ag_remove_idx, \
+    char: _pde_ag_remove_idx, \
+    unsigned int: _pde_ag_remove_idx, \
+    default: _pde_ag_remove_obj)((l), (arg))
 
 static inline void _pde_ag_clear(ArrayList l) {
   if (!l) return;
@@ -1801,6 +2191,34 @@ static void _pimage_invalidate(const void *dataKey) {
 enum { _PIMAGE_BLUR = 101, _PIMAGE_GRAY = 102, _PIMAGE_INVERT = 103,
        _PIMAGE_THRESHOLD = 104, _PIMAGE_POSTERIZE = 105, _PIMAGE_OPAQUE = 106 };
 
+#ifndef BLUR
+#define BLUR _PIMAGE_BLUR
+#endif
+#ifndef INVERT
+#define INVERT _PIMAGE_INVERT
+#endif
+#ifndef THRESHOLD
+#define THRESHOLD _PIMAGE_THRESHOLD
+#endif
+#ifndef POSTERIZE
+#define POSTERIZE _PIMAGE_POSTERIZE
+#endif
+#ifndef OPAQUE
+#define OPAQUE _PIMAGE_OPAQUE
+#endif
+
+static inline void filter2(int kind, float arg) { (void)kind; (void)arg; }
+static inline void filter1(int kind) { filter2(kind, 0.0f); }
+#define _PDE_FILTER_DISP(_1, _2, NAME, ...) NAME
+#define filter(...) _PDE_FILTER_DISP(__VA_ARGS__, filter2, filter1)(__VA_ARGS__)
+
+static inline float modelX(float x, float y, float z) { (void)y; (void)z; return x; }
+static inline float modelY(float x, float y, float z) { (void)x; (void)z; return y; }
+static inline float modelZ(float x, float y, float z) { (void)x; (void)y; return z; }
+static inline float screenX(float x, float y, ...) { (void)y; return x; }
+static inline float screenY(float x, float y, ...) { (void)x; return y; }
+static inline float screenZ(float x, float y, float z) { (void)x; (void)y; return z; }
+
 static inline PImage loadImage(const char *path) {
   PImage img = LoadImage(path);
   if (img.data == NULL) {
@@ -1826,6 +2244,10 @@ static inline void image_pim(PImage img, float x, float y, float w, float h) {
                  (Rectangle){ 0, 0, (float)img.width, (float)img.height },
                  (Rectangle){ x, y, w, h }, (Vector2){ 0, 0 }, 0.0f,
                  _tintEnabled ? _tintColor : WHITE);
+}
+
+static inline void background_img(Image img) {
+  image_pim(img, 0.0f, 0.0f, (float)img.width, (float)img.height);
 }
 
 #define image(first, ...) \
@@ -2093,25 +2515,25 @@ static inline void ellipseMode(int mode) { _ellipseModeState = mode; }
 static inline void _normRect(float x, float y, float w, float h, int mode,
                              float *ox, float *oy, float *ow, float *oh) {
   switch (mode) {
-    case CORNERS:
+    case _PDE_CORNERS:
       *ox = (x < w) ? x : w;
       *oy = (y < h) ? y : h;
       *ow = fabsf(w - x);
       *oh = fabsf(h - y);
       break;
-    case CENTER:
+    case _PDE_CENTER:
       *ox = x - w * 0.5f;
       *oy = y - h * 0.5f;
       *ow = w;
       *oh = h;
       break;
-    case RADIUS:
+    case _PDE_RADIUS:
       *ox = x - w;
       *oy = y - h;
       *ow = w * 2.0f;
       *oh = h * 2.0f;
       break;
-    case CORNER:
+    case _PDE_CORNER:
     default:
       *ox = x;
       *oy = y;
@@ -2655,9 +3077,20 @@ static inline float _pde_ceilf(float v) { return ceilf(v); }
 static inline int _pde_ceili(int v) { return v; }
 #define ceil(X) _Generic((X), int: _pde_ceili, default: _pde_ceilf)(X)
 
-static inline float constrain(float amt, float low, float high) {
+static inline float constrain_f(float amt, float low, float high) {
   return (amt < low) ? low : ((amt > high) ? high : amt);
 }
+static inline int constrain_i(int amt, int low, int high) {
+  return (amt < low) ? low : ((amt > high) ? high : amt);
+}
+#define constrain(amt, low, high) _Generic((amt), \
+    int: constrain_i, \
+    short: constrain_i, \
+    char: constrain_i, \
+    unsigned int: constrain_i, \
+    unsigned short: constrain_i, \
+    unsigned char: constrain_i, \
+    default: constrain_f)((amt), (low), (high))
 
 static inline float dist2(float x1, float y1, float x2, float y2) {
   float dx = x2 - x1;
@@ -2846,13 +3279,35 @@ static inline PVector pvector3D(float x, float y, float z) {
   return (PVector){ x, y, z };
 }
 
-static inline PVector pvector_add(PVector v1, PVector v2) {
+static inline PVector pvector_add_v(PVector v1, PVector v2) {
   return (PVector){ v1.x + v2.x, v1.y + v2.y, v1.z + v2.z };
 }
 
-static inline PVector pvector_sub(PVector v1, PVector v2) {
+static inline PVector pvector_add_xyz(PVector v, float x, float y, float z) {
+  return (PVector){ v.x + x, v.y + y, v.z + z };
+}
+
+static inline PVector pvector_add_xy(PVector v, float x, float y) {
+  return (PVector){ v.x + x, v.y + y, v.z };
+}
+
+#define _PV_ADD_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
+#define pvector_add(...) _PV_ADD_CHOOSER(__VA_ARGS__, pvector_add_xyz, pvector_add_xy, pvector_add_v)(__VA_ARGS__)
+
+static inline PVector pvector_sub_v(PVector v1, PVector v2) {
   return (PVector){ v1.x - v2.x, v1.y - v2.y, v1.z - v2.z };
 }
+
+static inline PVector pvector_sub_xyz(PVector v, float x, float y, float z) {
+  return (PVector){ v.x - x, v.y - y, v.z - z };
+}
+
+static inline PVector pvector_sub_xy(PVector v, float x, float y) {
+  return (PVector){ v.x - x, v.y - y, v.z };
+}
+
+#define _PV_SUB_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
+#define pvector_sub(...) _PV_SUB_CHOOSER(__VA_ARGS__, pvector_sub_xyz, pvector_sub_xy, pvector_sub_v)(__VA_ARGS__)
 
 static inline PVector pvector_mult(PVector v, float n) {
   return (PVector){ v.x * n, v.y * n, v.z * n };
@@ -2929,6 +3384,41 @@ static inline PVector pvector_random2D(void) {
   return (PVector){ cosf(angle), sinf(angle), 0.0f };
 }
 
+static inline PVector pvector_random3D(void) {
+  float angle = ((float)rand() / (float)RAND_MAX) * 2.0f * PI;
+  float z = ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f;
+  float r = sqrtf(1.0f - z * z);
+  return (PVector){ r * cosf(angle), r * sinf(angle), z };
+}
+
+static inline float pvector_angleBetween(PVector v1, PVector v2) {
+  float m1 = pvector_mag(v1);
+  float m2 = pvector_mag(v2);
+  if (m1 == 0.0f || m2 == 0.0f) return 0.0f;
+  float d = pvector_dot(v1, v2) / (m1 * m2);
+  if (d <= -1.0f) return PI;
+  if (d >= 1.0f) return 0.0f;
+  return acosf(d);
+}
+
+static inline PVector pvector_set2(PVector dummy, float x, float y) {
+  (void)dummy;
+  return (PVector){ x, y, 0.0f };
+}
+
+static inline PVector pvector_set3(PVector dummy, float x, float y, float z) {
+  (void)dummy;
+  return (PVector){ x, y, z };
+}
+
+static inline PVector pvector_setV(PVector dummy, PVector other) {
+  (void)dummy;
+  return other;
+}
+
+#define _PV_SET_CHOOSER(_1, _2, _3, _4, NAME, ...) NAME
+#define pvector_set(...) _PV_SET_CHOOSER(__VA_ARGS__, pvector_set3, pvector_set2, pvector_setV)(__VA_ARGS__)
+
 static inline PVector pvector_fromAngle(float angle) {
   return (PVector){ cosf(angle), sinf(angle), 0.0f };
 }
@@ -2949,6 +3439,30 @@ static inline void *_pde_array_new(int n, size_t elemSize) {
   void *p = calloc((size_t)(n > 0 ? n : 1), elemSize);
   _pde_arr_register(p, (size_t)(n > 0 ? n : 0), elemSize);
   return p;
+}
+
+static inline void *_pde_array2d_new(int d1, int d2, size_t elemSize) {
+  if (d1 <= 0) d1 = 1;
+  if (d2 <= 0) d2 = 1;
+  void **rows = (void **)calloc((size_t)d1, sizeof(void *));
+  _pde_arr_register(rows, (size_t)d1, sizeof(void *));
+  for (int i = 0; i < d1; i++) {
+    rows[i] = calloc((size_t)d2, elemSize);
+    _pde_arr_register(rows[i], (size_t)d2, elemSize);
+  }
+  return rows;
+}
+
+static inline void *_pde_array3d_new(int d1, int d2, int d3, size_t elemSize) {
+  if (d1 <= 0) d1 = 1;
+  if (d2 <= 0) d2 = 1;
+  if (d3 <= 0) d3 = 1;
+  void ***planes = (void ***)calloc((size_t)d1, sizeof(void **));
+  _pde_arr_register(planes, (size_t)d1, sizeof(void **));
+  for (int i = 0; i < d1; i++) {
+    planes[i] = (void **)_pde_array2d_new(d2, d3, elemSize);
+  }
+  return planes;
 }
 
 // ---------------------------------------------------------------------
