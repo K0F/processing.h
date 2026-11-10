@@ -19,6 +19,21 @@ static inline RShape RShape_ctor_impl(void *parent, ...) {
 }
 #define RShape_ctor(...) RShape_ctor_impl(0, ##__VA_ARGS__)
 
+typedef struct {
+  void *dummy;
+} RFont;
+
+#ifndef RFont_CENTER
+#define RFont_CENTER 0
+#endif
+
+static inline RFont RFont_ctor_impl(void *parent, ...) {
+  (void)parent;
+  RFont f = {0};
+  return f;
+}
+#define RFont_ctor(...) RFont_ctor_impl(0, ##__VA_ARGS__)
+
 typedef struct { void (*init)(void *parent); } _Pde_RG;
 static inline void _rg_init(void *p) { (void)p; }
 static _Pde_RG RG = { .init = _rg_init };

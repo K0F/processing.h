@@ -8,6 +8,8 @@ pp2c
 render
 tests/test_editor
 tests/test_math
+tests/test_libraries_data
+tests/test_libraries_media
 tests/sketches/ArrayListObject/ArrayListObject
 tests/sketches/NoBackground/NoBackground
 *.o

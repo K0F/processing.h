@@ -1,6 +1,10 @@
 #ifndef PROCESSING_H
 #define PROCESSING_H
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
 #define _VERSION_ "0.1"
 
 #include <stdio.h>
@@ -28,6 +32,7 @@
 #else
 #include <sys/time.h>
 #include <unistd.h>
+#include <fcntl.h>
 #endif
 // NOTE: <time.h> intentionally not included: sketches often declare a global
 // named "time", which would collide with time(). <sys/time.h>/GetSystemTime
@@ -171,6 +176,50 @@ typedef void *PApplet;
 typedef PGraphics PGraphicsOpenGL;
 typedef PGraphics PGraphicsPDF;
 typedef PGraphics PGraphics2D;
+
+static inline void _pde_noop_sunflow_set_type(int type) { (void)type; }
+static inline void _pde_noop_sunflow_set_focal(float f) { (void)f; }
+static inline void _pde_noop_sunflow_set_lens(float r) { (void)r; }
+static inline void _pde_noop_sunflow_set_aa(int s) { (void)s; }
+
+typedef struct {
+  void (*setType)(int type);
+  void (*setFocalDistance)(float f);
+  void (*setLensRadius)(float r);
+} _Pde_SunflowCamera;
+
+typedef struct {
+  void (*setAaSamples)(int s);
+} _Pde_SunflowScene;
+
+typedef struct {
+  _Pde_SunflowCamera camera;
+  _Pde_SunflowScene scene;
+} P5Sunflow;
+
+static inline P5Sunflow _pde_as_p5sunflow(PGraphics pg) {
+  (void)pg;
+  P5Sunflow s;
+  s.camera.setType = _pde_noop_sunflow_set_type;
+  s.camera.setFocalDistance = _pde_noop_sunflow_set_focal;
+  s.camera.setLensRadius = _pde_noop_sunflow_set_lens;
+  s.scene.setAaSamples = _pde_noop_sunflow_set_aa;
+  return s;
+}
+
+typedef struct { int THINLENS; int PINHOLE; } _Pde_Sunflow_Enum_t;
+static _Pde_Sunflow_Enum_t SunflowCamera = { 1, 2 };
+
+typedef struct {
+  void (*start)(void);
+} Thread;
+static inline void _pde_noop_thread_start(void) {}
+static inline Thread _pde_thread_ctor_impl(void) {
+  Thread t;
+  t.start = _pde_noop_thread_start;
+  return t;
+}
+#define Thread_ctor(...) _pde_thread_ctor_impl()
 
 #include <GL/gl.h>
 
@@ -1618,40 +1667,11 @@ static inline PeasyCam PeasyCam_ctor_impl(void *parent, ...) {
 }
 #define PeasyCam_ctor(...) PeasyCam_ctor_impl(0, ##__VA_ARGS__)
 
-// Ess audio library stub
-typedef struct {
-  bool smoothPan;
-  int size;
-  float bufferStartTime;
-  float duration;
-  float *buffer2;
-  float sampleRate;
-  void (*start)(void);
-  void (*stop)(void);
-} _Pde_AudioStream;
-#define AudioStream _Pde_AudioStream
+static inline void _ap_void(void) {}
 
-static inline _Pde_AudioStream AudioStream_ctor(void) {
-  _Pde_AudioStream s;
-  memset(&s, 0, sizeof(s));
-  s.buffer2 = (float *)calloc(1024, sizeof(float));
-  s.size = 1024;
-  s.sampleRate = 44100.0f;
-  s.duration = 1.0f;
-  return s;
-}
-
-typedef struct {
-  void (*filter)(AudioStream s);
-} FadeOut;
-static inline FadeOut FadeOut_ctor(void) { FadeOut f = {0}; return f; }
-#define FadeOut(...) FadeOut_ctor()
-
-typedef struct {
-  void (*filter)(AudioStream s);
-} FadeIn;
-static inline FadeIn FadeIn_ctor(void) { FadeIn f = {0}; return f; }
-#define FadeIn(...) FadeIn_ctor()
+#ifndef _PDE_MINIM_DEFINED
+#include "libraries/minim.h"
+#endif
 
 typedef struct {
   int ADD;
@@ -1659,108 +1679,6 @@ typedef struct {
   void (*stop)(void);
 } _Pde_Ess;
 static _Pde_Ess Ess = { .ADD = 1, .start = (void *)0, .stop = (void *)0 };
-
-// Minim sound library stub
-typedef struct {
-  float (*get)(int idx);
-} AudioBuffer;
-
-static inline float _ab_get(int idx) { (void)idx; return 0.0f; }
-
-typedef struct {
-  float phase;
-  float frequency;
-  void (*setFreq)(float f);
-  void (*generate)(AudioStream s, ...);
-} SineWave;
-
-static inline void _sw_noop(float f) { (void)f; }
-static inline void _sw_gen(AudioStream s, ...) { (void)s; }
-static inline SineWave SineWave_ctor_impl(float f, ...) {
-  (void)f;
-  SineWave w;
-  memset(&w, 0, sizeof(w));
-  w.setFreq = _sw_noop;
-  w.generate = _sw_gen;
-  return w;
-}
-#define SineWave_ctor(...) SineWave_ctor_impl(0, ##__VA_ARGS__)
-#define SineWave(...) SineWave_ctor(__VA_ARGS__)
-
-static inline void _ap_addsignal(SineWave sig, ...) { (void)sig; }
-
-typedef struct _AudioPlayer {
-  AudioBuffer left;
-  AudioBuffer right;
-  AudioBuffer mix;
-  int (*bufferSize)(void);
-  float (*sampleRate)(void);
-  void (*addSignal)(SineWave sig, ...);
-  void (*play)(void);
-  void (*pause)(void);
-  void (*loop)(void);
-  void (*rewind)(void);
-  void (*close)(void);
-} AudioPlayer;
-
-typedef AudioPlayer AudioInput;
-typedef AudioPlayer AudioSnippet;
-typedef AudioPlayer AudioOutput;
-
-static inline int _ap_bufsize(void) { return 1024; }
-static inline float _ap_samplerate(void) { return 44100.0f; }
-static inline void _ap_void(void) {}
-
-static inline AudioPlayer _ap_init(void) {
-  AudioPlayer ap;
-  memset(&ap, 0, sizeof(ap));
-  ap.left.get = _ab_get;
-  ap.right.get = _ab_get;
-  ap.mix.get = _ab_get;
-  ap.bufferSize = _ap_bufsize;
-  ap.sampleRate = _ap_samplerate;
-  ap.addSignal = _ap_addsignal;
-  ap.play = _ap_void;
-  ap.pause = _ap_void;
-  ap.loop = _ap_void;
-  ap.rewind = _ap_void;
-  ap.close = _ap_void;
-  return ap;
-}
-
-typedef struct {
-  AudioInput (*getLineIn)(int type, ...);
-  AudioOutput (*getLineOut)(int type, ...);
-  AudioPlayer (*loadFile)(const char *path, ...);
-  AudioSnippet (*loadSnippet)(const char *path, ...);
-  void (*stop)(void);
-  void (*debugOn)(void);
-  void (*debugOff)(void);
-} Minim;
-
-static inline AudioInput _minim_linein(int type, ...) { (void)type; return _ap_init(); }
-static inline AudioOutput _minim_lineout(int type, ...) { (void)type; return _ap_init(); }
-static inline AudioPlayer _minim_load(const char *p, ...) { (void)p; return _ap_init(); }
-
-static inline Minim Minim_ctor_impl(void *parent, ...) {
-  (void)parent;
-  Minim m;
-  m.getLineIn = _minim_linein;
-  m.getLineOut = _minim_lineout;
-  m.loadFile = _minim_load;
-  m.loadSnippet = _minim_load;
-  m.stop = _ap_void;
-  m.debugOn = _ap_void;
-  m.debugOff = _ap_void;
-  return m;
-}
-#define Minim_ctor(...) Minim_ctor_impl(0, ##__VA_ARGS__)
-#ifndef STEREO
-#define STEREO 2
-#endif
-#ifndef MONO
-#define MONO 1
-#endif
 
 // Unimotion SMS library stub
 typedef struct {
@@ -1809,104 +1727,26 @@ static inline GSMovieMaker GSMovieMaker_ctor_impl(void *parent, ...) {
 #define GifMaker GSMovieMaker
 #define GifMaker_ctor(...) GSMovieMaker_ctor_impl(0, ##__VA_ARGS__)
 
+#ifndef _PDE_MINIM_DEFINED
 #define AudioSample AudioSnippet
 #define AudioSample_ctor(...) AudioSnippet_ctor_impl(0, ##__VA_ARGS__)
+#endif
 
-// GSPipeline & Movie video stubs
-typedef struct {
-  void *data;
-  int width;
-  int height;
-  int mipmaps;
-  int format;
-  bool (*available)(void);
-  void (*read)(void);
-  void (*loadPixels)(void);
-  void (*updatePixels)(void);
-  void (*filter)(int kind, ...);
-  void (*mask)(void *m);
-  uint32_t *pixels;
-} GSPipeline;
-typedef GSPipeline Movie;
+#ifndef _PDE_VIDEO_DEFINED
+#include "libraries/video.h"
+#endif
 
-static inline bool _gsp_avail(void) { return false; }
-static inline void _gsp_read(void) {}
-static inline void _gsp_loadPixels(void) {}
-static inline void _gsp_updatePixels(void) {}
-static inline void _gsp_filter(int kind, ...) { (void)kind; }
-static inline void _gsp_mask(void *m) { (void)m; }
+#ifndef _PDE_XML_DEFINED
+#include "libraries/xml.h"
+#endif
 
-static inline GSPipeline GSPipeline_ctor_impl(void *parent, ...) {
-  (void)parent;
-  GSPipeline p;
-  memset(&p, 0, sizeof(p));
-  p.width = 320; p.height = 240;
-  p.data = calloc(320 * 240, sizeof(uint32_t));
-  _pde_arr_register(p.data, 320 * 240, sizeof(uint32_t));
-  p.pixels = (uint32_t *)p.data;
-  p.available = _gsp_avail;
-  p.read = _gsp_read;
-  p.loadPixels = _gsp_loadPixels;
-  p.updatePixels = _gsp_updatePixels;
-  p.filter = _gsp_filter;
-  p.mask = _gsp_mask;
-  return p;
-}
-#define GSPipeline_ctor(...) GSPipeline_ctor_impl(0, ##__VA_ARGS__)
-#define Movie_ctor(...) GSPipeline_ctor_impl(0, ##__VA_ARGS__)
+#ifndef _PDE_LIB_GEOMERATIVE_H
+#include "libraries/geomerative.h"
+#endif
 
-// XMLElement library stub
-typedef struct _XMLElement XMLElement;
-struct _XMLElement {
-  XMLElement (*getChild)(int idx);
-  float (*getFloatAttribute)(const char *attr);
-  int (*getIntAttribute)(const char *attr);
-  const char *(*getStringAttribute)(const char *attr);
-  const char *(*getContent)(void);
-  int (*getChildCount)(void);
-};
-
-static inline XMLElement XMLElement_ctor_impl(void *parent, ...);
-static inline XMLElement _xml_get_child(int idx) { (void)idx; return XMLElement_ctor_impl(NULL); }
-static inline float _xml_get_float(const char *attr) { (void)attr; return 0.0f; }
-static inline int _xml_get_int(const char *attr) { (void)attr; return 0; }
-static inline const char *_xml_get_str(const char *attr) { (void)attr; return ""; }
-static inline const char *_xml_get_content(void) { return ""; }
-static inline int _xml_get_count(void) { return 0; }
-
-static inline XMLElement XMLElement_ctor_impl(void *parent, ...) {
-  (void)parent;
-  XMLElement x;
-  x.getChild = _xml_get_child;
-  x.getFloatAttribute = _xml_get_float;
-  x.getIntAttribute = _xml_get_int;
-  x.getStringAttribute = _xml_get_str;
-  x.getContent = _xml_get_content;
-  x.getChildCount = _xml_get_count;
-  return x;
-}
-#define XMLElement_ctor(...) XMLElement_ctor_impl(0, ##__VA_ARGS__)
-
-// geomerative library stubs (RPoint, RShape, RG)
-typedef struct { float x, y; } RPoint;
-typedef struct {
-  RPoint *(*getPoints)(void);
-  int (*countPaths)(void);
-} RShape;
-static inline RPoint *_rs_getPoints(void) { static RPoint pts[1] = {{0,0}}; return pts; }
-static inline int _rs_countPaths(void) { return 0; }
-static inline RShape RShape_ctor_impl(void *parent, ...) {
-  (void)parent;
-  RShape s;
-  s.getPoints = _rs_getPoints;
-  s.countPaths = _rs_countPaths;
-  return s;
-}
-#define RShape_ctor(...) RShape_ctor_impl(0, ##__VA_ARGS__)
-
-typedef struct { void (*init)(void *parent); } _Pde_RG;
-static inline void _rg_init(void *p) { (void)p; }
-static _Pde_RG RG = { .init = _rg_init };
+#ifndef _PDE_LIB_IO_H
+#include "libraries/io.h"
+#endif
 
 // ArrayList (in-memory subset). Each element is a malloc'ed copy of the
 // original value; `get` returns a void* to that copy so the Processing
@@ -2085,6 +1925,47 @@ static inline const char *join(const char *const *arr, const char *sep) {
   joinBufs[(joinIdx + 3) & 3] = out;
   return out;
 }
+
+static inline void saveStrings(const char *filename, const char *const *lines) {
+  if (!filename || !lines) return;
+  FILE *f = fopen(filename, "w");
+  if (!f) return;
+  int n = _pde_arr_len((const void *)lines);
+  if (n < 0) {
+    for (int i = 0; lines[i] != NULL; i++) {
+      fprintf(f, "%s\n", lines[i]);
+    }
+  } else {
+    for (int i = 0; i < n; i++) {
+      if (lines[i]) fprintf(f, "%s\n", lines[i]);
+      else fprintf(f, "\n");
+    }
+  }
+  fclose(f);
+}
+
+static inline const char **loadStrings(const char *filename) {
+  if (!filename) return NULL;
+  FILE *f = fopen(filename, "r");
+  if (!f) return NULL;
+  char line[4096];
+  int count = 0;
+  while (fgets(line, sizeof(line), f)) count++;
+  rewind(f);
+  const char **out = (const char **)calloc((size_t)count, sizeof(const char *));
+  int idx = 0;
+  while (fgets(line, sizeof(line), f) && idx < count) {
+    size_t l = strlen(line);
+    while (l > 0 && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = '\0';
+    out[idx++] = strdup(line);
+  }
+  fclose(f);
+  _pde_arr_register(out, (size_t)count, sizeof(const char *));
+  return out;
+}
+
+static inline int parseInt(const char *s) { return s ? atoi(s) : 0; }
+static inline float parseFloat(const char *s) { return s ? (float)atof(s) : 0.0f; }
 
 // Array utilities: append/concat/subset/shorten/reverse/splice/sort /////
 
@@ -2418,14 +2299,26 @@ static inline void background_pg(RenderTexture2D pg) {
   image_pg(pg, 0.0f, 0.0f, (float)width, (float)height);
 }
 
+static inline void image_video3(_Pde_Video v, float x, float y) {
+  Image img = { v.data, v.width, v.height, v.mipmaps, v.format };
+  image_pim3(img, x, y);
+}
+
+static inline void image_video5(_Pde_Video v, float x, float y, float w, float h) {
+  Image img = { v.data, v.width, v.height, v.mipmaps, v.format };
+  image_pim(img, x, y, w, h);
+}
+
 #define _pde_image_3(img, x, y) _Generic((img), \
   Image: image_pim3, \
-  RenderTexture2D: image_pg3 \
+  RenderTexture2D: image_pg3, \
+  _Pde_Video: image_video3 \
 )((img), (x), (y))
 
 #define _pde_image_5(img, x, y, w, h) _Generic((img), \
   Image: image_pim, \
-  RenderTexture2D: image_pg \
+  RenderTexture2D: image_pg, \
+  _Pde_Video: image_video5 \
 )((img), (x), (y), (w), (h))
 
 #define _PDE_IMAGE_CHOOSER(_1, _2, _3, _4, _5, NAME, ...) NAME

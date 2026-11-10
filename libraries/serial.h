@@ -1,6 +1,10 @@
 #ifndef _PDE_LIB_SERIAL_H
 #define _PDE_LIB_SERIAL_H
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +12,7 @@
 #include <unistd.h>
 #include <termios.h>
 #include <glob.h>
+#include <stdint.h>
 
 typedef struct {
   int fd;
@@ -69,7 +74,14 @@ static inline Serial Serial_ctor_impl(void *parent, const char *port, int baud) 
   }
   return s;
 }
-#define Serial_ctor(...) Serial_ctor_impl(0, ##__VA_ARGS__)
+static inline Serial _pde_serial_ctor_2(const char *port, int baud) {
+  return Serial_ctor_impl(NULL, port, baud);
+}
+static inline Serial _pde_serial_ctor_3(void *parent, const char *port, int baud) {
+  return Serial_ctor_impl(parent, port, baud);
+}
+#define _SERIAL_CTOR_CHOOSER(_1, _2, _3, NAME, ...) NAME
+#define Serial_ctor(...) _SERIAL_CTOR_CHOOSER(__VA_ARGS__, _pde_serial_ctor_3, _pde_serial_ctor_2)(__VA_ARGS__)
 
 static inline int Serial_available(Serial *s) {
   if (!s || s->fd < 0) return 0;

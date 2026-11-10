@@ -61,8 +61,26 @@ bool is_type_token(Token t) {
         strcmp(t.text, "GSPipeline") == 0 || strcmp(t.text, "Movie") == 0 ||
         strcmp(t.text, "XMLElement") == 0 || strcmp(t.text, "RPoint") == 0 ||
         strcmp(t.text, "RShape") == 0 ||
+        strcmp(t.text, "Serial") == 0 || strcmp(t.text, "Arduino") == 0 ||
+        strcmp(t.text, "OscP5") == 0 || strcmp(t.text, "OscMessage") == 0 ||
+        strcmp(t.text, "NetAddress") == 0 || strcmp(t.text, "OscArgument") == 0 ||
+        strcmp(t.text, "Client") == 0 || strcmp(t.text, "Server") == 0 ||
+        strcmp(t.text, "BufferedReader") == 0 || strcmp(t.text, "FileReader") == 0 ||
+        strcmp(t.text, "PrintWriter") == 0 || strcmp(t.text, "MidiIO") == 0 ||
+        strcmp(t.text, "MidiOut") == 0 || strcmp(t.text, "MidiBus") == 0 ||
+        strcmp(t.text, "Capture") == 0 || strcmp(t.text, "RFont") == 0 ||
+        strcmp(t.text, "Minim") == 0 || strcmp(t.text, "FFT") == 0 ||
         strcmp(t.text, "AudioStream") == 0 || strcmp(t.text, "SineWave") == 0 ||
-        strcmp(t.text, "FadeOut") == 0 || strcmp(t.text, "FadeIn") == 0)
+        strcmp(t.text, "FadeOut") == 0 || strcmp(t.text, "FadeIn") == 0 ||
+        strcmp(t.text, "Recorder") == 0 || strcmp(t.text, "URL") == 0 ||
+        strcmp(t.text, "InputStreamReader") == 0 || strcmp(t.text, "P5Sunflow") == 0 ||
+        strcmp(t.text, "SunflowCamera") == 0 || strcmp(t.text, "SunflowScene") == 0 ||
+        strcmp(t.text, "MovieMaker") == 0 || strcmp(t.text, "GSMovieMaker") == 0 ||
+        strcmp(t.text, "GifMaker") == 0 || strcmp(t.text, "AudioPlayer") == 0 ||
+        strcmp(t.text, "AudioInput") == 0 || strcmp(t.text, "AudioSnippet") == 0 ||
+        strcmp(t.text, "AudioOutput") == 0 || strcmp(t.text, "AudioSample") == 0 ||
+        strcmp(t.text, "PeasyCam") == 0 || strcmp(t.text, "Thread") == 0 ||
+        strcmp(t.text, "Saver") == 0)
       return true;
     if (is_class_name(t.text)) return true;
   }
@@ -190,6 +208,8 @@ int rewrite_modulo(Token *tokens, int num_tokens, Token **out_tokens) {
           rdepth--;
         }
         else if (rdepth == 0 && (is_arith_op_text(s) || strcmp(s, ",") == 0 || strcmp(s, ";") == 0)) break;
+      } else if (t.type == TOKEN_OPERATOR && rdepth == 0) {
+        break;
       } else if (t.type == TOKEN_EOF) break;
       j++;
     }
@@ -263,7 +283,7 @@ int rewrite_charat(Token *tokens, int num_tokens, Token **out_tokens) {
 // populated; rewrites are gated on the receiver actually being a String.
 static bool is_str_method_name(const char *name) {
   static const char *m[] = { "indexOf","substring","toLowerCase","toUpperCase",
-                             "replace","equals","trim","length", NULL };
+                             "replace","equals","trim","length","split", NULL };
   for (int i = 0; m[i]; i++) if (strcmp(name, m[i]) == 0) return true;
   return false;
 }
@@ -405,6 +425,8 @@ int rewrite_str_methods(Token *tokens, int num_tokens, Token **out_tokens) {
       snprintf(fnname, MAX_TOKEN_TEXT, "_pde_str_indexOf%s", nargs > 1 ? "_from" : "");
     else if (strcmp(meth, "length") == 0)
       snprintf(fnname, MAX_TOKEN_TEXT, "_pde_str_len");
+    else if (strcmp(meth, "split") == 0)
+      snprintf(fnname, MAX_TOKEN_TEXT, "split");
     else
       snprintf(fnname, MAX_TOKEN_TEXT, "_pde_str_%s", meth);
 
@@ -435,6 +457,67 @@ int rewrite_str_methods(Token *tokens, int num_tokens, Token **out_tokens) {
     out[o++] = tokens[close]; // ')'
     #undef PDE_EMIT_A
     i = close;
+  }
+  *out_tokens = out;
+  return o;
+}
+
+static bool is_xml_method_name(const char *name) {
+  static const char *m[] = {
+    "getChild", "getStringAttribute", "getFloatAttribute",
+    "getIntAttribute", "getContent", "getName", "getChildCount", NULL
+  };
+  for (int i = 0; m[i]; i++) if (strcmp(name, m[i]) == 0) return true;
+  return false;
+}
+
+int rewrite_xml_methods(Token *tokens, int num_tokens, Token **out_tokens) {
+  Token *out = malloc(sizeof(Token) * (num_tokens * 3 + 64));
+  int o = 0;
+  for (int i = 0; i < num_tokens; i++) {
+    if (tokens[i].type == TOKEN_DOT &&
+        i + 2 < num_tokens &&
+        tokens[i+1].type == TOKEN_IDENTIFIER &&
+        is_xml_method_name(tokens[i+1].text) &&
+        tokens[i+2].type == TOKEN_SYMBOL && strcmp(tokens[i+2].text, "(") == 0 &&
+        o > 0) {
+      int open = i + 2;
+      int close = matching_close(tokens, num_tokens, open, "(", ")");
+      if (close > open) {
+        int ls = receiver_start(out, o - 1);
+        int recvLen = o - ls;
+        Token *recvSeg = malloc(sizeof(Token) * (recvLen > 0 ? recvLen : 1));
+        memcpy(recvSeg, &out[ls], sizeof(Token) * recvLen);
+        o = ls; // pop receiver from out
+
+        Token anchor = tokens[i];
+        Token fn = anchor;
+        snprintf(fn.text, MAX_TOKEN_TEXT, "XMLElement_%s", tokens[i+1].text);
+        fn.type = TOKEN_IDENTIFIER;
+        out[o++] = fn;
+
+        Token op = anchor; strcpy(op.text, "("); op.type = TOKEN_SYMBOL;
+        out[o++] = op;
+
+        memcpy(&out[o], recvSeg, sizeof(Token) * recvLen);
+        o += recvLen;
+        free(recvSeg);
+
+        int nargs = count_args(tokens, open, close);
+        if (nargs > 0) {
+          Token comma = anchor; strcpy(comma.text, ","); comma.type = TOKEN_SYMBOL;
+          out[o++] = comma;
+          for (int q = open + 1; q < close; q++) out[o++] = tokens[q];
+        }
+
+        Token cl = anchor; strcpy(cl.text, ")"); cl.type = TOKEN_SYMBOL;
+        out[o++] = cl;
+
+        i = close; // advance past ')'
+        continue;
+      }
+    }
+    out[o++] = tokens[i];
   }
   *out_tokens = out;
   return o;
@@ -915,6 +998,36 @@ int rewrite_java_compat(Token *tokens, int num_tokens, Token **out_tokens) {
       continue;
     }
 
+    // Static class method rewrites:
+    // Serial.list() -> Serial_list()
+    // Arduino.list() -> Arduino_list()
+    // Capture.list() -> Capture_list()
+    if (tokens[i].type == TOKEN_IDENTIFIER &&
+        (strcmp(tokens[i].text, "Serial") == 0 ||
+         strcmp(tokens[i].text, "Arduino") == 0 ||
+         strcmp(tokens[i].text, "Capture") == 0) &&
+        i + 2 < num_tokens &&
+        tokens[i+1].type == TOKEN_DOT &&
+        tokens[i+2].type == TOKEN_IDENTIFIER && strcmp(tokens[i+2].text, "list") == 0) {
+      Token t = tokens[i];
+      snprintf(t.text, MAX_TOKEN_TEXT, "%s_list", tokens[i].text);
+      out[o++] = t;
+      i += 2;
+      continue;
+    }
+
+    // RG.init(...) -> _rg_init(...)
+    if (tokens[i].type == TOKEN_IDENTIFIER && strcmp(tokens[i].text, "RG") == 0 &&
+        i + 2 < num_tokens &&
+        tokens[i+1].type == TOKEN_DOT &&
+        tokens[i+2].type == TOKEN_IDENTIFIER && strcmp(tokens[i+2].text, "init") == 0) {
+      Token t = tokens[i];
+      snprintf(t.text, MAX_TOKEN_TEXT, "_rg_init");
+      out[o++] = t;
+      i += 2;
+      continue;
+    }
+
     // 2. Runtime.getRuntime().exec(...) -> system(...)
     if (tokens[i].type == TOKEN_IDENTIFIER && strcmp(tokens[i].text, "Runtime") == 0 &&
         i + 6 < num_tokens &&
@@ -1142,7 +1255,43 @@ static bool is_builtin_ctor_class(const char *name) {
          strcmp(name, "Movie") == 0 ||
          strcmp(name, "XMLElement") == 0 ||
          strcmp(name, "RShape") == 0 ||
+         strcmp(name, "Serial") == 0 ||
+         strcmp(name, "Arduino") == 0 ||
+         strcmp(name, "OscP5") == 0 ||
+         strcmp(name, "OscMessage") == 0 ||
+         strcmp(name, "NetAddress") == 0 ||
+         strcmp(name, "Client") == 0 ||
+         strcmp(name, "Server") == 0 ||
+         strcmp(name, "BufferedReader") == 0 ||
+         strcmp(name, "FileReader") == 0 ||
+         strcmp(name, "PrintWriter") == 0 ||
+         strcmp(name, "MidiIO") == 0 ||
+         strcmp(name, "MidiOut") == 0 ||
+         strcmp(name, "MidiBus") == 0 ||
+         strcmp(name, "Capture") == 0 ||
+         strcmp(name, "RFont") == 0 ||
+         strcmp(name, "FFT") == 0 ||
+         strcmp(name, "Recorder") == 0 ||
+         strcmp(name, "URL") == 0 ||
+         strcmp(name, "InputStreamReader") == 0 ||
+         strcmp(name, "P5Sunflow") == 0 ||
+         strcmp(name, "Thread") == 0 ||
          strcmp(name, "PMatrix3D") == 0;
+}
+
+static bool is_native_lib_type(const char *name) {
+  if (!name) return false;
+  return strcmp(name, "Serial") == 0 ||
+         strcmp(name, "Arduino") == 0 ||
+         strcmp(name, "Client") == 0 ||
+         strcmp(name, "Server") == 0 ||
+         strcmp(name, "BufferedReader") == 0 ||
+         strcmp(name, "PrintWriter") == 0 ||
+         strcmp(name, "FileReader") == 0 ||
+         strcmp(name, "OscMessage") == 0 ||
+         strcmp(name, "OscP5") == 0 ||
+         strcmp(name, "OscArgument") == 0 ||
+         strcmp(name, "Capture") == 0;
 }
 
 static bool is_plausible_type_token(Token t) {
@@ -1165,6 +1314,20 @@ static bool is_plausible_type_token(Token t) {
       strcmp(t.text, "GSPipeline") == 0 || strcmp(t.text, "Movie") == 0 ||
       strcmp(t.text, "XMLElement") == 0 || strcmp(t.text, "RPoint") == 0 ||
       strcmp(t.text, "RShape") == 0 ||
+      strcmp(t.text, "Serial") == 0 || strcmp(t.text, "Arduino") == 0 ||
+      strcmp(t.text, "OscP5") == 0 || strcmp(t.text, "OscMessage") == 0 ||
+      strcmp(t.text, "NetAddress") == 0 || strcmp(t.text, "OscArgument") == 0 ||
+      strcmp(t.text, "Client") == 0 || strcmp(t.text, "Server") == 0 ||
+      strcmp(t.text, "BufferedReader") == 0 || strcmp(t.text, "FileReader") == 0 ||
+      strcmp(t.text, "PrintWriter") == 0 || strcmp(t.text, "MidiIO") == 0 ||
+      strcmp(t.text, "MidiOut") == 0 || strcmp(t.text, "MidiBus") == 0 ||
+      strcmp(t.text, "Capture") == 0 || strcmp(t.text, "RFont") == 0 ||
+      strcmp(t.text, "FFT") == 0 ||
+      strcmp(t.text, "Recorder") == 0 || strcmp(t.text, "URL") == 0 ||
+      strcmp(t.text, "InputStreamReader") == 0 || strcmp(t.text, "P5Sunflow") == 0 ||
+      strcmp(t.text, "SunflowCamera") == 0 || strcmp(t.text, "SunflowScene") == 0 ||
+      strcmp(t.text, "GifMaker") == 0 || strcmp(t.text, "AudioSample") == 0 ||
+      strcmp(t.text, "Thread") == 0 || strcmp(t.text, "Saver") == 0 ||
       strcmp(t.text, "MovieMaker") == 0 || strcmp(t.text, "PMatrix3D") == 0)
     return true;
   return is_class_name(t.text);
@@ -1684,13 +1847,17 @@ static void scan_globals(Token *t, int n) {
       if (k < n && strcmp(t[k].text, "=") == 0) {
         bool hasCall = false;
         for (int u = k + 1; u < n && u < k + 120; u++) {
+          if (t[u].type == TOKEN_SYMBOL && strcmp(t[u].text, ";") == 0) break;
           if (t[u].type == TOKEN_SYMBOL && strcmp(t[u].text, "(") == 0) {
             hasCall = true; break;
           }
-          if (t[u].type == TOKEN_IDENTIFIER && strcmp(t[u].text, "new") == 0) {
+          if (t[u].type == TOKEN_IDENTIFIER &&
+              strcmp(t[u].text, "true") != 0 &&
+              strcmp(t[u].text, "false") != 0 &&
+              strcmp(t[u].text, "null") != 0 &&
+              strcmp(t[u].text, "NULL") != 0) {
             hasCall = true; break;
           }
-          if (t[u].type == TOKEN_SYMBOL && strcmp(t[u].text, ";") == 0) break;
         }
         if (hasCall && _nglobal_nonconst < MAX_GLOBAL_NONCONST) {
           snprintf(_global_nonconst_names[_nglobal_nonconst],
@@ -1889,6 +2056,17 @@ int rewrite_classes(Token *t, int n, Token **out_tokens) {
         i = dotIdx + 2;
         continue;
       }
+      if (targetTy && is_native_lib_type(targetTy)) {
+        Token fn = cur;
+        snprintf(fn.text, MAX_TOKEN_TEXT, "%s_%s", targetTy, mn);
+        out[o++] = fn;
+        Token ol = cur; strcpy(ol.text, "("); out[o++] = ol;
+        Token amp = cur; strcpy(amp.text, "&"); amp.type = TOKEN_OPERATOR; out[o++] = amp;
+        for (int q = i; q < dotIdx; q++) out[o++] = t[q];
+        if (!noArg) { Token cm = cur; strcpy(cm.text, ","); out[o++] = cm; }
+        i = dotIdx + 2;
+        continue;
+      }
     }
 
     out[o++] = cur;
@@ -2044,6 +2222,37 @@ static void synth_sp(Token *t, int n, int nextIdx) {
 static void emit_class_body(const ClassDef *c, const ClassMethod *m, Token *t, int n) {
   for (int i = 0; i < n; i++) {
     Token tk = t[i];
+
+    // Name-first array declarations: "TYPE name[]..." -> "TYPE *name"
+    if ((is_type_token(tk) || tk.type == TOKEN_IDENTIFIER) &&
+        (i + 3 < n) &&
+        t[i+1].type == TOKEN_IDENTIFIER &&
+        t[i+2].type == TOKEN_SYMBOL && strcmp(t[i+2].text, "[") == 0 &&
+        t[i+3].type == TOKEN_SYMBOL && strcmp(t[i+3].text, "]") == 0)
+    {
+      const char *type_out = emit_c_type_str(tk.text);
+      int dims = 0;
+      int k = i + 2;
+      while (k + 1 < n &&
+             t[k].type == TOKEN_SYMBOL && strcmp(t[k].text, "[") == 0 &&
+             t[k+1].type == TOKEN_SYMBOL && strcmp(t[k+1].text, "]") == 0) {
+        dims++;
+        k += 2;
+      }
+      bool braceInit = (dims == 1 && k + 1 < n &&
+                        t[k].type == TOKEN_OPERATOR && strcmp(t[k].text, "=") == 0 &&
+                        t[k+1].type == TOKEN_SYMBOL && strcmp(t[k+1].text, "{") == 0);
+      if (braceInit) {
+        printf("%s %s[] = {", type_out, t[i+1].text);
+        i = k + 1;
+      } else {
+        printf("%s ", type_out);
+        for (int d = 0; d < dims; d++) printf("*");
+        printf("%s", t[i+1].text);
+        i = k - 1;
+      }
+      continue;
+    }
 
     // `(Type[])` array cast -> `(Type *)`
     if (tk.type == TOKEN_SYMBOL && strcmp(tk.text, "(") == 0 &&
@@ -2447,6 +2656,49 @@ static void emit_class_body(const ClassDef *c, const ClassMethod *m, Token *t, i
         }
         i = dotIdx + 2;
         continue;
+      }
+      if (targetTy && is_native_lib_type(targetTy)) {
+        char recv[MAX_TOKEN_TEXT + 8];
+        class_recv(c, subj, recv, sizeof(recv));
+        if (isArrElem) {
+          char fullRecv[MAX_TOKEN_TEXT * 2];
+          snprintf(fullRecv, sizeof(fullRecv), "%s", recv);
+          int rlen = (int)strlen(fullRecv);
+          for (int q = i + 1; q < dotIdx && rlen + 32 < (int)sizeof(fullRecv); q++) {
+            rlen += snprintf(fullRecv + rlen, sizeof(fullRecv) - rlen, "%s", t[q].text);
+          }
+          printf("%s_%s(&%s%s", targetTy, meth, fullRecv, zeroArg ? "" : ", ");
+        } else {
+          bool isPtr = (strcmp(recv, "self") == 0 || (targetTy && targetTy[strlen(targetTy)-1] == '*'));
+          printf("%s_%s(%s%s%s", targetTy, meth, isPtr ? "" : "&", recv, zeroArg ? "" : ", ");
+        }
+        i = dotIdx + 2;
+        continue;
+      }
+    }
+
+    // String methods inside class methods: s.split(delim) -> split(s, delim), etc.
+    if (tk.type == TOKEN_IDENTIFIER && i + 3 < n &&
+        t[i + 1].type == TOKEN_DOT && t[i + 2].type == TOKEN_IDENTIFIER &&
+        t[i + 3].type == TOKEN_SYMBOL && strcmp(t[i + 3].text, "(") == 0) {
+      const char *ft = local_type_of(m, tk.text);
+      if (!ft) ft = is_field_of(c, tk.text) ? field_type_of(c, tk.text) : symbol_type(tk.text);
+      if (ft && (strcmp(ft, "String") == 0 || strcmp(ft, "const char *") == 0 || strcmp(ft, "char *") == 0)) {
+        const char *mn = t[i + 2].text;
+        char recv[MAX_TOKEN_TEXT + 8];
+        class_recv(c, tk.text, recv, sizeof(recv));
+        if (strcmp(mn, "split") == 0) {
+          printf("split(%s, ", recv);
+          i += 3;
+          continue;
+        } else if (strcmp(mn, "length") == 0) {
+          int close = matching_close(t, n, i + 3, "(", ")");
+          if (close > i + 3) {
+            printf("_pde_str_len(%s)", recv);
+            i = close;
+            continue;
+          }
+        }
       }
     }
 
@@ -3275,6 +3527,8 @@ int main(int argc, char *argv[]) {
     free(tokens); tokens = r; num_tokens = n;
     n = rewrite_array_length(tokens, num_tokens, &r);
     free(tokens); tokens = r; num_tokens = n;
+    n = rewrite_xml_methods(tokens, num_tokens, &r);
+    free(tokens); tokens = r; num_tokens = n;
   }
 
   // Java allows a variable and a function to share a name (separate
@@ -3337,7 +3591,18 @@ int main(int argc, char *argv[]) {
   }
 
   // Print framework header (pack_color lives in processing.h, arity-routed)
-  printf("#include \"processing.h\"\n\n");
+  printf("#ifndef _GNU_SOURCE\n#define _GNU_SOURCE 1\n#endif\n");
+  printf("#include \"processing.h\"\n");
+  printf("#include \"libraries/io.h\"\n");
+  printf("#include \"libraries/serial.h\"\n");
+  printf("#include \"libraries/net.h\"\n");
+  printf("#include \"libraries/osc.h\"\n");
+  printf("#include \"libraries/video.h\"\n");
+  printf("#include \"libraries/arduino.h\"\n");
+  printf("#include \"libraries/midi.h\"\n");
+  printf("#include \"libraries/geomerative.h\"\n");
+  printf("#include \"libraries/xml.h\"\n");
+  printf("#include \"libraries/minim.h\"\n\n");
 
   // If the sketch declares global variables that clash with standard Processing
   // mode macros (e.g. float RADIUS), undefine them so the sketch variable is valid.
@@ -3543,7 +3808,10 @@ int main(int argc, char *argv[]) {
             strcmp(tokens[u].text, "(") == 0)
           hasCall = true;
         if (tokens[u].type == TOKEN_IDENTIFIER &&
-            strcmp(tokens[u].text, "new") == 0)
+            strcmp(tokens[u].text, "true") != 0 &&
+            strcmp(tokens[u].text, "false") != 0 &&
+            strcmp(tokens[u].text, "null") != 0 &&
+            strcmp(tokens[u].text, "NULL") != 0)
           hasCall = true;
       }
       if (!hasCall) continue;
@@ -3668,6 +3936,47 @@ int main(int argc, char *argv[]) {
             }
             u += 1;
             continue;
+          }
+          // new ClassName(...) → ClassName_ctor(...)
+          if (tokens[u].type == TOKEN_IDENTIFIER &&
+              strcmp(tokens[u].text, "new") == 0 &&
+              u + 2 < initEnd &&
+              tokens[u+1].type == TOKEN_IDENTIFIER &&
+              (is_class_name(tokens[u+1].text) || is_builtin_ctor_class(tokens[u+1].text)) &&
+              tokens[u+2].type == TOKEN_SYMBOL &&
+              strcmp(tokens[u+2].text, "(") == 0) {
+            char ctorBuf[128];
+            int clen = snprintf(ctorBuf, sizeof(ctorBuf), "%s_ctor(", tokens[u+1].text);
+            if (pos + clen < 512) {
+              memcpy(initTexts[nInitTexts] + pos, ctorBuf, clen);
+              pos += clen;
+              initTexts[nInitTexts][pos++] = ' ';
+              initTexts[nInitTexts][pos] = '\0';
+            }
+            u += 2;
+            continue;
+          }
+          // new ArrayList(...) → _pde_ag_new()
+          if (tokens[u].type == TOKEN_IDENTIFIER &&
+              strcmp(tokens[u].text, "new") == 0 &&
+              u + 1 < initEnd &&
+              tokens[u+1].type == TOKEN_IDENTIFIER &&
+              strcmp(tokens[u+1].text, "ArrayList") == 0) {
+            int j = u + 2;
+            if (j < initEnd && strcmp(tokens[j].text, "<") == 0)
+              j = skip_angle_close(tokens, initEnd, j) + 1;
+            if (j < initEnd && tokens[j].type == TOKEN_SYMBOL && strcmp(tokens[j].text, "(") == 0) {
+              const char *s = "_pde_ag_new(";
+              int slen = (int)strlen(s);
+              if (pos + slen < 512) {
+                memcpy(initTexts[nInitTexts] + pos, s, slen);
+                pos += slen;
+                initTexts[nInitTexts][pos++] = ' ';
+                initTexts[nInitTexts][pos] = '\0';
+              }
+              u = j;
+              continue;
+            }
           }
           int len = (int)strlen(tokens[u].text);
           if (pos + len + 1 < 512) {
@@ -4082,7 +4391,7 @@ int main(int argc, char *argv[]) {
         printf("(const char **)");
       else
         printf("(%s *)", cty);
-      i += 4;
+      i += 5;
       continue;
     }
 
@@ -4092,6 +4401,16 @@ int main(int argc, char *argv[]) {
         tokens[i + 2].type == TOKEN_SYMBOL && strcmp(tokens[i + 2].text, ")") == 0 &&
         tokens[i + 3].type == TOKEN_IDENTIFIER) {
       printf("_pde_as_pgraphics3d(%s)", tokens[i + 3].text);
+      i += 4;
+      continue;
+    }
+
+    // 3e4b. `(P5Sunflow) expr` -> `_pde_as_p5sunflow(expr)`
+    if (current.type == TOKEN_SYMBOL && strcmp(current.text, "(") == 0 &&
+        i + 3 < num_tokens && strcmp(tokens[i + 1].text, "P5Sunflow") == 0 &&
+        tokens[i + 2].type == TOKEN_SYMBOL && strcmp(tokens[i + 2].text, ")") == 0 &&
+        tokens[i + 3].type == TOKEN_IDENTIFIER) {
+      printf("_pde_as_p5sunflow(%s)", tokens[i + 3].text);
       i += 4;
       continue;
     }
@@ -4108,9 +4427,13 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    // 4. Localized pixel pointer type conversion mapping
+    // 4. Localized pixel pointer type conversion mapping (only bare sketch pixels, not obj.pixels)
     if (current.type == TOKEN_IDENTIFIER && strcmp(current.text, "pixels") == 0) {
-      printf("((uint32_t*)pixels)");
+      if (i > 0 && tokens[i-1].type == TOKEN_DOT) {
+        printf("pixels");
+      } else {
+        printf("((uint32_t*)pixels)");
+      }
       i++;
       continue;
     }
@@ -4390,6 +4713,14 @@ int main(int argc, char *argv[]) {
         tokens[i+2].type == TOKEN_IDENTIFIER &&
         strcmp(tokens[i+2].text, "length") == 0)
     {
+      if (i + 3 < num_tokens && tokens[i+3].type == TOKEN_SYMBOL && strcmp(tokens[i+3].text, "(") == 0) {
+        int close = matching_close(tokens, num_tokens, i + 3, "(", ")");
+        if (close > i + 3) {
+          printf("_pde_str_len(%s)", current.text);
+          i = close + 1;
+          continue;
+        }
+      }
       printf("_pde_len(%s)", current.text);
       i += 3;
       continue;

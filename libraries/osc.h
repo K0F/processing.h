@@ -128,7 +128,14 @@ static inline OscP5 OscP5_ctor_impl(void *parent, int port) {
   }
   return o;
 }
-#define OscP5_ctor(...) OscP5_ctor_impl(0, ##__VA_ARGS__)
+static inline OscP5 _pde_oscp5_ctor_1(int port) {
+  return OscP5_ctor_impl(NULL, port);
+}
+static inline OscP5 _pde_oscp5_ctor_2(void *parent, int port) {
+  return OscP5_ctor_impl(parent, port);
+}
+#define _OSCP5_CTOR_CHOOSER(_1, _2, NAME, ...) NAME
+#define OscP5_ctor(...) _OSCP5_CTOR_CHOOSER(__VA_ARGS__, _pde_oscp5_ctor_2, _pde_oscp5_ctor_1)(__VA_ARGS__)
 
 static inline void OscP5_send(OscP5 *o, OscMessage *msg, NetAddress *dest) {
   (void)o; (void)msg; (void)dest;
