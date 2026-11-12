@@ -2,7 +2,9 @@
 
 Transpile `.pde` Processing sketches to plain C and run them on raylib,
 without Java. `pde2c` does the transpiling, `processing.h` is the
-single-header runtime API, and `pdeide` is a small editor wrapping the chain.
+single-header runtime API, `libraries/` supplies drop-in C replacements for
+the most common Processing libraries, and `pdeide` is a small editor wrapping
+the chain.
 
 ![pdeide — Processing sketch editor](screenshot.png)
 
@@ -13,6 +15,8 @@ single-header runtime API, and `pdeide` is a small editor wrapping the chain.
 -   **Key APIs**: G1-G11 reference-audit stubs, `min()/max()` (3-arg + arrays), `delay()/cursor()/noCursor()`
 -   **Data conversion/manipulation**: `binary()/unbinary()`, `trim()`, `byte()` (clamped 0-255), `boolean()`
 -   **Style management**: `pushStyle()/popStyle()`
+-   **Object model**: user classes with constructors/methods, `ArrayList`, class-typed globals
+-   **Libraries**: ten `import`-compatible headers in [libraries/](#libraries), wired in automatically
 
 **Limitations:**
 -   No inheritance, generics, or external Java libraries.
@@ -35,6 +39,30 @@ cmake --build build -j
 ctest --test-dir build         # headless unit tests (no window/GPU needed)
 cmake --build build --target release   # -> build/pdeide-linux.tar.gz
 ```
+
+## Libraries
+
+`pde2c` drops the Java `import` lines and emits `#include`s for every header
+in `libraries/` instead, so sketches using these libraries transpile, compile
+and link with no extra flags. The transpiler also knows the library types, so
+`new Capture(this, 640, 480)`, `minim.loadFile(...)` or `cam.read()` are
+rewritten into the right C constructor/method call.
+
+| Header | Processing import | Status |
+| :----------------- | :-------------------------- | :--- |
+| `libraries/io.h` | `processing.data` file I/O | **real** — `createReader`, `BufferedReader.readLine`, `createWriter`, `PrintWriter` |
+| `libraries/serial.h` | `processing.serial.*` | **real** — POSIX `termios` ports, `Serial.list()` from `/dev` |
+| `libraries/arduino.h` | `processing.serial.Arduino` | pin-state model over the serial layer (no Firmata wire protocol yet) |
+| `libraries/net.h` | `processing.net.*` | **real** — non-blocking TCP `Client`/`Server` sockets |
+| `libraries/osc.h` | `oscP5.*` | **real** — UDP socket, `OscP5`, `NetAddress`, `OscMessage` |
+| `libraries/xml.h` | `processing.data.XML` | **real** — self-contained parser: elements, attributes, children, entity unescaping |
+| `libraries/minim.h` | `ddf.minim.*` | **real** — raylib audio backend (`AudioPlayer`, `AudioSample`), FFT with `getBand()`/`specSize()`, `SineWave`, `FadeIn`/`FadeOut` |
+| `libraries/video.h` | `processing.video.*` | API + state machine only — `Capture`/`Movie`, `Capture.list()` from `/dev/video*`; no frame decoding yet |
+| `libraries/midi.h` | `themiddlespike.*` | API surface, no-ops |
+| `libraries/geomerative.h` | `geomerative.*` | API surface, no-ops (`RShape`, `RFont`) |
+
+Each header is self-contained and guarded, so it can be included directly from
+your own C sources as well.
 
 ## Android (Termux)
 
@@ -63,8 +91,11 @@ Linux-only `-lrt` and using `$PREFIX` include/ lib paths — so `./run`,
 
 ## Tests & health checks
 
-**Unit tests** verify the `pde2c` transpiler and `processing.h` runtime functions.
--   `make test` runs 45 editor checks and 116 runtime checks, verified by `ctest`.
+**Unit tests** verify the `pde2c` transpiler, the `processing.h` runtime and
+the library headers.
+-   `make test` runs four suites: 45 editor checks, 116 runtime checks,
+    58 library data checks and 63 library media checks — 282 checks total.
+-   `ctest --test-dir build` runs the editor and runtime suites (no window, no GPU, no audio needed).
 
 **Real-world corpus tests** run a batch of Processing sketches through the transpiler:
 
@@ -78,10 +109,15 @@ Linux-only `-lrt` and using `$PREFIX` include/ lib paths — so `./run`,
 
 | Corpus | Pass Rate |
 | :------------------------------- | :--------: |
-| 2010 sketch archive (`~/src/2010`) | 21/168     |
-| shiffman/LearningProcessing      | 122/428    |
+| 2010 sketch archive (`~/src/2010`) | 74/168 (44%) |
+| shiffman/LearningProcessing      | 172/428 (40%) |
 
-Failures typically stem from missing third-party libraries (`OscP5`, `Minim`, `PeasyCam`, `PGraphicsOpenGL`, `Capture`/`Serial`, etc.) or other unimplemented Processing API. Both corpora have shown **no regressions** when compared byte-for-byte against the pre-feature baseline. See [TODO.md](TODO.md) for the roadmap.
+Failures typically stem from Processing API that is still missing
+(`beginRaw`, `Capture.start()`, `Client.readStringUntil`, custom `Thread`
+subclasses) or from classic Applet-era sketches that call `setup()`/`draw()`
+by hand instead of letting the framework do it. The native library headers
+above lifted both corpora substantially (previously 21/168 and 122/428).
+See [TODO.md](TODO.md) for the roadmap.
 
 
 Author: Kof, 2026 — community software, provided as-is.
