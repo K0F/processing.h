@@ -21,12 +21,13 @@ SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 ROOT="${1:-}"
 [ -d "$ROOT" ] || { echo "corpus: usage: $0 <corpus-root>" >&2; exit 1; }
 
+. "$SCRIPT_DIR/pdecommon.sh"
+
 PDE2C_BIN="${PDE2C:-$SCRIPT_DIR/pde2c}"
 if [ "$PDE2C_BIN" = "$SCRIPT_DIR/pde2c" ]; then
-  if [ "$SCRIPT_DIR/pde2c.c" -nt "$SCRIPT_DIR/pde2c" ] || [ ! -x "$SCRIPT_DIR/pde2c" ]; then
-    gcc "$SCRIPT_DIR/pde2c.c" -o "$SCRIPT_DIR/pde2c" || exit 1
-  fi
+  pde_build_transpiler "$SCRIPT_DIR" || exit 1
 fi
+pde_pch_update "$SCRIPT_DIR" || true   # faster gcc; a failure just means the slow path
 
 WORK=$(mktemp -d /tmp/pdecorpus.XXXXXX)
 cleanup() { [ "${PDE_CORPUS_KEEP:-0}" = "1" ] || rm -rf "$WORK"; }
@@ -48,16 +49,7 @@ while IFS= read -r DIR; do
   mkdir -p "$BLD"
 
   # combine tabs like run: main tab (dir-named) first, rest alphabetical
-  MAIN="$BLD/none.pde"
-  [ -f "$DIR/$NAME.pde" ] && MAIN="$DIR/$NAME.pde"
-  {
-    [ "$MAIN" != "$BLD/none.pde" ] && { printf '//@file %s\n' "$(basename "$MAIN")"; cat "$MAIN"; }
-    for f in $(find "$DIR" -maxdepth 1 -name '*.pde' | sort); do
-      [ "$f" = "$MAIN" ] && continue
-      printf '//@file %s\n' "$(basename "$f")"
-      cat "$f"
-    done
-  } > "$BLD/combined.pde"
+  pde_merge_tabs "$DIR" "$BLD/combined.pde"
 
   STATUS=""
   DETAIL=""

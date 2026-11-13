@@ -1,80 +1,405 @@
 #!/bin/sh
-# wildtest — batch compile-check of real-world sketches against pde2c.
+# wildtest — batch compile/run check of real-world sketches against pde2c.
 #
-#   ./wildtest ~/src/2021        check every sketch dir under a tree
+#   ./wildtest ~/src/2010             transpile + gcc -fsyntax-only per sketch
+#   ./wildtest --link ~/src/2010      also link, so PASS means runnable
+#   ./wildtest --run ~/src/2010       also run each sketch headless for 2 s
+#   ./wildtest -j8 ~/src/2010         process sketches in parallel
+#   ./wildtest --save base.tsv ~/src/2010        keep a baseline
+#   ./wildtest --baseline base.tsv ~/src/2010    A/B against it
+#   ./wildtest --json out.json ~/src/2010        machine-readable results
 #
-# Each directory containing .pde tabs is transpiled (tabs merged exactly
-# like ./run does) and gcc syntax-checked. Prints one line per sketch plus
-# a PASS/FAIL tally; the first error line is shown for failures.
+# Every directory holding .pde tabs is merged exactly like ./run does, then
+# transpiled, compiled (and optionally linked and run headless). One line per
+# sketch is printed, followed by a tally and a failure-bucket histogram.
+#
+# Stale applet/ snapshots are skipped: archived Processing folders usually
+# carry a pre-IDE-2 copy under applet/ that otherwise doubles the denominator.
+#
+# Options:
+#   -j N              process N sketches in parallel (default 1)
+#   --link            link each sketch (raylib/freetype via pdedeps)
+#   --run             additionally launch each sketch headless (needs X/Xvfb)
+#   --seconds N       seconds a sketch may run before counting as alive (2)
+#   --json FILE       write machine-readable results
+#   --save FILE       write this run's TSV (usable later as --baseline)
+#   --baseline FILE   compare with a previous --save file, print FIXED and
+#                     REGRESSED per sketch, exit 1 if anything regressed
+#   -k, --keep        keep the build dir of every failing sketch
+#   -v, --verbose     show the full first diagnostic, unclipped
+#   --include-applet  do not skip applet/ snapshot directories
+#   --filter REGEX    only sketches whose relative tag matches REGEX
+#
+# Exit status: 0, or 1 when --baseline reports a regression.
 set -u
 
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-TREE="${1:-$SCRIPT_DIR}"
+. "$SCRIPT_DIR/pdecommon.sh"
 
-if [ ! -d "$TREE" ]; then
-  echo "wildtest: no such directory: $TREE" >&2
-  exit 1
-fi
+TAB=$(printf '\t')
 
-if [ "$SCRIPT_DIR/pde2c.c" -nt "$SCRIPT_DIR/pde2c" ] || [ ! -x "$SCRIPT_DIR/pde2c" ]; then
-  gcc "$SCRIPT_DIR/pde2c.c" -o "$SCRIPT_DIR/pde2c" || exit 1
-fi
+usage() {
+  sed -n '2,/^set -u/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
 
-# precompiled header (same -I flags as the per-sketch gcc calls below)
-if [ "$SCRIPT_DIR/processing.h" -nt "$SCRIPT_DIR/processing.h.gch" ] || [ ! -f "$SCRIPT_DIR/processing.h.gch" ]; then
-  gcc $("$SCRIPT_DIR/pdedeps" --includes) -x c-header "$SCRIPT_DIR/processing.h" -o "$SCRIPT_DIR/processing.h.gch" || exit 1
-fi
+# ---------------------------------------------------------------- helpers ---
 
-TMP=$(mktemp -d /tmp/pdewild.XXXXXX)
-trap 'rm -rf "$TMP"' EXIT INT TERM
+# First useful diagnostic from a compiler log: a diagnostic pointing at a
+# sketch tab beats generated code (#line keeps the original tab name), and
+# errors beat notes. _tmp is the per-sketch build dir, set by wild_one.
+wild_first() {
+  _d=$(grep -m1 -E '^[^:]+\.pde:[0-9]+:[0-9]+: error:' "$1" | _clean | sed 's/^ *//')
+  [ -n "$_d" ] || _d=$(grep -m1 -E '^[^:]+\.pde:[0-9]+' "$1" | _clean | sed 's/^ *//')
+  [ -n "$_d" ] || _d=$(grep -m1 'undefined reference' "$1" | _clean | sed 's/^ *//')
+  [ -n "$_d" ] || _d=$(grep -m1 'error:' "$1" | _clean | sed 's/^ *//')
+  [ -n "$_d" ] || _d=$(head -n 1 "$1")
+  printf '%s' "$_d"
+}
 
-pass=0
-fail=0
-broken=0
+# Drop the rotating temp path so repeated runs diff byte-for-byte.
+_clean() { sed "s|$_tmp/||g; s|^sketch\.c:[0-9][0-9]*:[0-9][0-9]*: *||; s|^sketch\.c:([^)]*): *||"; }
 
-# Normalize volatile paths out of diagnostic lines so `wildtest A` vs `wildtest B`
-# output diffs byte-for-byte across runs (temp dirs rotate per invocation):
-#   /tmp/pdewild.XXXXXX/sketch.c:9:9: error: ...   ->   error: ...
-strip_tmp() { sed "s|$TMP/||g; s|^sketch\.c:[0-9][0-9]*:[0-9][0-9]*: *||"; }
+# Does this diagnostic describe malformed source (a parse error) rather than a
+# missing API or a codegen problem? Arity mismatches read "expected 2, have 3",
+# so a bare "expected" match is not enough.
+wild_malformed() {
+  case "$1" in
+    *"expected "[0-9]*|*"have "[0-9]*) return 1 ;;
+    *unmatched*|*"does not match"*|*stray*|*"at end of input"*|*"expected expression"*|*"expected declaration"*|*"expected identifier"*|*"expected initializer"*|*expected*"’ before"*)
+      return 0 ;;
+  esac
+  return 1
+}
 
-for dir in $(find "$TREE" -type f -name '*.pde' -exec dirname {} \; | sort -u); do
-  MAIN="$dir/none.pde"
-  [ -f "$dir/$(basename "$dir").pde" ] && MAIN="$dir/$(basename "$dir").pde"
-  {
-    [ -f "$MAIN" ] && { printf '//@file %s\n' "$(basename "$MAIN")"; cat "$MAIN"; }
-    for f in $(find "$dir" -maxdepth 1 -name '*.pde' | sort); do
-      [ "$f" = "$MAIN" ] && continue
-      printf '//@file %s\n' "$(basename "$f")"
-      cat "$f"
-    done
-  } > "$TMP/combined.pde"
+# Bucket classification: which kind of defect is behind a failing line.
+# Project-specific overrides live in tests/wildtest-buckets.txt as
+#   <extended regex><TAB><bucket>
+wild_bucket() {
+  _status=$1
+  _detail=$2
+  if [ -f "$SCRIPT_DIR/tests/wildtest-buckets.txt" ]; then
+    while IFS="$TAB" read -r _re _bucket; do
+      case "$_re" in '' | '#'*) continue ;; esac
+      if printf '%s' "$_detail" | grep -qE -- "$_re"; then
+        printf '%s' "$_bucket"
+        return
+      fi
+    done < "$SCRIPT_DIR/tests/wildtest-buckets.txt"
+  fi
+  case "$_status" in
+    PASS)          return ;;
+    TRANSPILE-ERR) printf 'pde2c-gap'; return ;;
+    SOURCE-BROKEN) printf 'source-broken'; return ;;
+    RUN-CRASH) printf 'pde2c-gap'; return ;;
+  esac
+  case "$_detail" in
+    *"conflicting types for ‘Recorder"*|*"conflicting types for ‘URL"*|*"conflicting types for ‘Client"*|*"conflicting types for ‘Server"*|*"conflicting types for ‘Serial"*|*"conflicting types for ‘Capture"*|*"conflicting types for ‘Movie"*|*"conflicting types for ‘Minim"*|*"conflicting types for ‘Audio"*|*"type ‘Recorder"*)
+      printf 'lib-nameclash' ;;
+    *"redeclared as different kind of symbol"*|*"conflicting type qualifiers"*|*"redefinition of ‘width"*)
+      printf 'lib-pollution' ;;
+    *"arguments to function ‘minim"*|*"arguments to function ‘Audio"*|*"arguments to function ‘SineWave"*)
+      printf 'lib-arity' ;;
+    *"has incomplete type"*)
+      printf 'class-order' ;;
+    *"too few arguments to function"*|*"too many arguments to function ‘audio"*)
+      printf 'pde2c-gap' ;;
+    *"unknown type name"*|*"has no member named"*|*"undeclared"*|*"implicit declaration"*)
+      printf 'api-missing' ;;
+    *"request for member"*|*"initializer element is not constant"*|*"conversion to non-scalar"*|*"undefined reference"*|*"incompatible type"*|*"incompatible pointer type"*|*"assignment to"*|*"called object is not"*|*"static declaration"*|*"is a pointer"*|*"too many arguments to function"*)
+      printf 'pde2c-gap' ;;
+    *) printf 'unclassified' ;;
+  esac
+}
 
-  tag=$(printf '%s' "${dir#"$TREE"/}" | tr '/' ':')
+# Keep the build dir of a failing sketch when --keep was given.
+wild_keep_fail() {
+  if [ "$WILD_KEEP" = 1 ]; then
+    cp -R "$1" "$WILD_KEEP_DIR/" 2>/dev/null
+  fi
+  rm -rf "$1"
+}
 
-  if ! "$SCRIPT_DIR/pde2c" "$TMP/combined.pde" > "$TMP/sketch.c" 2> "$TMP/transpile.err"; then
-    first=$(grep -m1 'error:' "$TMP/transpile.err" | sed 's/^ *//')
-    printf '%-46s TRANSPILE-ERR  %s\n' "$tag" "${first:-unknown}"
-    fail=$((fail + 1))
-    continue
+# Transpile (+ compile, link, run) one sketch dir. Prints STATUS<TAB>TAG<TAB>DETAIL
+wild_one() {
+  _dir=$1
+  _tag=$(printf '%s' "${_dir#"$WILD_TREE"/}" | tr '/' ':')
+  _tmp=$(mktemp -d /tmp/pdewild.XXXXXX)
+  wild_emit() {
+    printf '%s\t%s\t%s\n' "$1" "$_tag" "$(printf '%s' "$2" | tr '\t\r' '  ')"
+  }
+
+  pde_merge_tabs "$_dir" "$_tmp/combined.pde"
+
+  if ! "$WILD_PDE2C" "$_tmp/combined.pde" > "$_tmp/sketch.c" 2> "$_tmp/e"; then
+    wild_emit TRANSPILE-ERR "$(wild_first "$_tmp/e")"
+    wild_keep_fail "$_tmp"
+    return
   fi
 
-  if gcc -fsyntax-only $("$SCRIPT_DIR/pdedeps" --includes) "$TMP/sketch.c" 2> "$TMP/gcc.err"; then
-    printf '%-46s PASS\n' "$tag"
-    pass=$((pass + 1))
-  else
-    # source-mapped first error (sketch lines) beats generated-code noise
-    first=$(grep -m1 '^sketch\.pde:[0-9]' "$TMP/gcc.err" | sed 's/^sketch\.pde:[0-9]*: *//')
-    [ -z "$first" ] && first=$(grep -m1 'error:' "$TMP/gcc.err" | sed 's/^ *//' | strip_tmp)
-    case "$first" in
-      *"expected*"*) broken=$((broken + 1))
-        printf '%-46s SOURCE-BROKEN  %s\n' "$tag" "${first:-unknown}" ;;
+  # -w: warnings must not pollute the status lines; errors still fail.
+  if ! gcc -w -fsyntax-only $WILD_INCLUDES "$_tmp/sketch.c" 2> "$_tmp/e"; then
+    _d=$(wild_first "$_tmp/e")
+    if wild_malformed "$_d"; then
+      wild_emit SOURCE-BROKEN "${_d:-(source looks malformed)}"
+    else
+      wild_emit COMPILE-ERR "${_d:-unknown}"
+    fi
+    wild_keep_fail "$_tmp"
+    return
+  fi
+
+  if [ "$WILD_LINK" = 1 ] || [ "$WILD_RUN" = 1 ]; then
+    if ! gcc -w $WILD_INCLUDES "$_tmp/sketch.c" -o "$_tmp/sketch" $WILD_LIBS \
+         2> "$_tmp/e"; then
+      wild_emit LINK-ERR "$(wild_first "$_tmp/e")"
+      wild_keep_fail "$_tmp"
+      return
+    fi
+  fi
+
+  if [ "$WILD_RUN" = 1 ]; then
+    # Processing resolves loadImage("x.png") against the sketch folder, so run
+    # from a copy of it — a throwaway copy, so saveFrame() can never scribble
+    # into the corpus.
+    mkdir -p "$_tmp/cwd"
+    [ -d "$_dir/data" ] && cp -R "$_dir/data" "$_tmp/cwd/" 2>/dev/null
+    cp "$SCRIPT_DIR/terminus.ttf" "$_tmp/cwd/" 2>/dev/null
+    ( cd "$_tmp/cwd" && exec timeout "$WILD_SECS" "$_tmp/sketch" > out.txt 2>&1 )
+    _rc=$?
+    case "$_rc" in
+      0|124|143) wild_emit PASS "" ;;   # exited, or still alive when pulled
       *)
-        printf '%-46s COMPILE-ERR    %s\n' "$tag" "${first:-unknown}"
-        fail=$((fail + 1)) ;;
+        wild_emit RUN-CRASH "signal $((_rc - 128)) $(grep -m1 -iE 'error|fatal|segmentation|invalid' "$_tmp/cwd/out.txt" 2>/dev/null | cut -c1-120)"
+        if [ "$WILD_KEEP" = 1 ]; then
+          cp -R "$_tmp" "$WILD_KEEP_DIR/" 2>/dev/null
+        fi
+        ;;
     esac
+    rm -rf "$_tmp"
+    return
   fi
+
+  wild_emit PASS ""
+  rm -rf "$_tmp"
+}
+
+# ---- worker mode: one sketch, driven by the parent loop or by xargs --------
+if [ "${1:-}" = "--worker" ]; then
+  shift
+  _line=$(wild_one "$1")
+  _st=${_line%%"$TAB"*}
+  _rest=${_line#*"$TAB"}
+  _tg=${_rest%%"$TAB"*}
+  _dt=${_rest#*"$TAB"}
+  printf '%s\t%s\t%s\t%s\n' "$_st" "$_tg" "$(wild_bucket "$_st" "$_dt")" "$_dt"
+  exit 0
+fi
+
+# ------------------------------------------------------------------- setup --
+JOBS=1
+WILD_LINK=0
+WILD_RUN=0
+WILD_SECS=2
+WILD_KEEP=0
+VERBOSE=0
+APPLET=0
+FILTER=
+JSON=
+SAVE=
+BASELINE=
+TREE=
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage 0 ;;
+    -j) shift; JOBS=${1:?-j needs a number} ;;
+    -j*) JOBS=${1#-j} ;;
+    --link) WILD_LINK=1 ;;
+    --run) WILD_RUN=1 ;;
+    --seconds) shift; WILD_SECS=${1:-2} ;;
+    --json) shift; JSON=${1:?--json needs a path} ;;
+    --save) shift; SAVE=${1:?--save needs a path} ;;
+    --baseline) shift; BASELINE=${1:?--baseline needs a path} ;;
+    -k|--keep) WILD_KEEP=1 ;;
+    -v|--verbose) VERBOSE=1 ;;
+    --include-applet) APPLET=1 ;;
+    --filter) shift; FILTER=${1:?--filter needs a regex} ;;
+    -*) echo "wildtest: unknown option: $1" >&2; usage 1 ;;
+    *) TREE=$1 ;;
+  esac
+  shift
 done
 
-total=$((pass + fail + broken))
-echo "----------------------------------------------"
-echo "pass $pass / $total (compile-err $fail, source-broken $broken)"
+TREE=${TREE:-$SCRIPT_DIR/tests/sketches}
+[ -d "$TREE" ] || { echo "wildtest: no such directory: $TREE" >&2; exit 1; }
+TREE=$(readlink -f "$TREE")
+
+case "$JOBS" in ''|*[!0-9]*) echo "wildtest: -j needs a number: $JOBS" >&2; exit 1 ;; esac
+
+pde_build_transpiler "$SCRIPT_DIR" || exit 1
+if ! pde_pch_update "$SCRIPT_DIR"; then
+  echo "wildtest: PCH build failed, compiling without one" >&2
+fi
+
+WILD_INCLUDES=$("$SCRIPT_DIR/pdedeps" --includes)
+WILD_LIBS=$("$SCRIPT_DIR/pdedeps" --libs)
+WILD_PDE2C="$SCRIPT_DIR/pde2c"
+WILD_TREE="$TREE"
+WILD_KEEP_DIR="${WILD_KEEP_DIR:-/tmp/pdewild-keep}"
+export WILD_INCLUDES WILD_LIBS WILD_PDE2C WILD_TREE WILD_LINK WILD_RUN \
+       WILD_SECS WILD_KEEP WILD_KEEP_DIR
+
+WORK=$(mktemp -d /tmp/pdewildrun.XXXXXX)
+XVFB_PID=
+cleanup() {
+  [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null
+  rm -rf "$WORK"
+}
+trap cleanup EXIT INT TERM
+if [ "$WILD_KEEP" = 1 ]; then
+  mkdir -p "$WILD_KEEP_DIR"
+  echo "wildtest: keeping failing build dirs in $WILD_KEEP_DIR"
+fi
+
+# ---- headless display for --run -------------------------------------------
+if [ "$WILD_RUN" = 1 ]; then
+  if command -v Xvfb > /dev/null 2>&1; then
+    _disp=97
+    while [ -e "/tmp/.X11-unix/X$_disp" ]; do _disp=$((_disp + 1)); done
+    Xvfb ":$_disp" -screen 0 1024x768x24 > /dev/null 2>&1 &
+    XVFB_PID=$!
+    export DISPLAY=":$_disp"
+    sleep 1
+  else
+    echo "wildtest: Xvfb not found, running on ${DISPLAY:-no display}" >&2
+  fi
+fi
+
+# ---- enumerate sketch dirs (NUL-safe, applet/ snapshots skipped) ----------
+if [ "$APPLET" = 1 ]; then
+  find "$TREE" -type f -name '*.pde' -print0
+else
+  find "$TREE" -type f -name '*.pde' -not -path '*/applet/*' -print0
+fi | while IFS= read -r -d '' _f; do printf '%s\0' "${_f%/*}"; done |
+  LC_ALL=C sort -zu > "$WORK/dirs"
+
+if [ -n "$FILTER" ]; then
+  # Match against the sketch's path relative to the tree, not the absolute
+  # path, so `--filter '^06'` means "the 06-* month" and not "rooted at /".
+  : > "$WORK/dirs.f"
+  while IFS= read -r -d '' _d; do
+    _rel=${_d#"$TREE"/}
+    if printf '%s\n' "$_rel" | grep -qE -- "$FILTER"; then
+      printf '%s\0' "$_d" >> "$WORK/dirs.f"
+    fi
+  done < "$WORK/dirs"
+  mv "$WORK/dirs.f" "$WORK/dirs"
+fi
+
+TOTAL=$(tr -cd '\0' < "$WORK/dirs" | wc -c | tr -d ' ')
+[ "$TOTAL" -gt 0 ] || { echo "wildtest: no .pde sketches under $TREE" >&2; exit 1; }
+
+# ---- run every sketch -----------------------------------------------------
+if [ "$JOBS" -le 1 ]; then
+  while IFS= read -r -d '' _d; do "$0" --worker "$_d"; done < "$WORK/dirs" > "$WORK/results"
+else
+  xargs -0 -n 1 -P "$JOBS" sh -c '"$0" --worker "$1"' "$SCRIPT_DIR/wildtest" \
+    < "$WORK/dirs" > "$WORK/results"
+fi
+
+LC_ALL=C sort -t "$TAB" -k2,2 "$WORK/results" > "$WORK/sorted"
+
+# ---- report ---------------------------------------------------------------
+pass=0 cerr=0 lerr=0 rerr=0 terr=0 broken=0
+while IFS="$TAB" read -r _st _tg _bk _dt; do
+  if [ "$VERBOSE" = 1 ]; then
+    printf '%-46s %-14s %s\n' "$_tg" "$_st" "$_dt"
+  else
+    printf '%-46s %-14s %s\n' "$_tg" "$_st" "$(printf '%s' "$_dt" | cut -c1-110)"
+  fi
+  case "$_st" in
+    PASS) pass=$((pass + 1)) ;;
+    COMPILE-ERR) cerr=$((cerr + 1)) ;;
+    LINK-ERR) lerr=$((lerr + 1)) ;;
+    RUN-CRASH) rerr=$((rerr + 1)) ;;
+    TRANSPILE-ERR) terr=$((terr + 1)) ;;
+    SOURCE-BROKEN) broken=$((broken + 1)) ;;
+  esac
+done < "$WORK/sorted"
+
+printf -- '----------------------------------------------\n'
+_dsum=
+_add_count() {
+  if [ "$2" -gt 0 ]; then
+    _dsum="${_dsum}${_dsum:+, }$1 $2"
+  fi
+}
+_add_count compile-err "$cerr"
+_add_count link-err "$lerr"
+_add_count run-crash "$rerr"
+_add_count transpile-err "$terr"
+_add_count source-broken "$broken"
+printf 'pass %d / %d%s\n' "$pass" "$TOTAL" "${_dsum:+ ($_dsum)}"
+
+# ---- failure buckets ------------------------------------------------------
+awk -F'\t' '$1 != "PASS" { n[$3]++ } END { for (b in n) printf "%s\t%d\n", b, n[b] }' \
+  "$WORK/sorted" | LC_ALL=C sort -t "$TAB" -k2,2nr > "$WORK/buckets"
+if [ -s "$WORK/buckets" ]; then
+  printf '\n== failure buckets ==\n'
+  while IFS="$TAB" read -r _b _n; do
+    printf '%-16s %d\n' "$_b" "$_n"
+  done < "$WORK/buckets"
+fi
+
+# ---- optional artifacts ---------------------------------------------------
+if [ -n "$SAVE" ]; then
+  cp "$WORK/sorted" "$SAVE"
+  echo "wildtest: saved $SAVE"
+fi
+
+if [ -n "$JSON" ]; then
+  {
+    printf '{\n  "tree": "%s",\n' "$(printf '%s' "$TREE" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+    printf '  "total": %d,\n  "pass": %d,\n  "compile_err": %d,\n  "link_err": %d,\n  "run_crash": %d,\n  "transpile_err": %d,\n  "source_broken": %d,\n' \
+      "$TOTAL" "$pass" "$cerr" "$lerr" "$rerr" "$terr" "$broken"
+    printf '  "sketches": [\n'
+    awk -F'\t' -v n="$(wc -l < "$WORK/sorted" | tr -d ' ')" '{
+      d = $4
+      gsub(/\\/, "\\\\", d); gsub(/"/, "\\\"", d); gsub(/\t/, " ", d)
+      printf "    {\"tag\": \"%s\", \"status\": \"%s\", \"bucket\": \"%s\", \"detail\": \"%s\"}%s\n", \
+        $2, $1, $3, d, (NR == n ? "" : ",")
+    }' "$WORK/sorted"
+    printf '  ]\n}\n'
+  } > "$JSON"
+  echo "wildtest: wrote $JSON"
+fi
+
+# ---- baseline A/B ---------------------------------------------------------
+if [ -n "$BASELINE" ]; then
+  [ -f "$BASELINE" ] || { echo "wildtest: no baseline file: $BASELINE" >&2; exit 1; }
+  awk -F'\t' '
+    NR == FNR { base[$2] = $1; next }
+    { cur[$2] = $1; order[++n] = $2 }
+    END {
+      fixed = 0; reg = 0
+      for (i = 1; i <= n; i++) {
+        t = order[i]; c = cur[t]; b = base[t]
+        if (b == "")            print "NEW", t, "-", c
+        else if (b == c)        { }
+        else if (c == "PASS") { print "FIXED", t, b, c; fixed++ }
+        else if (b == "PASS") { print "REGRESSED", t, b, c; reg++ }
+        else                    print "CHANGED", t, b, c
+      }
+      if (!filtered)
+        for (t in base) if (!(t in cur)) print "GONE", t, base[t], "-"
+      printf "== A/B: fixed %d, regressed %d\n", fixed, reg > "/dev/stderr"
+      exit (reg > 0)
+    }' filtered="${FILTER:+1}" "$BASELINE" "$WORK/sorted" > "$WORK/ab"
+  _abrc=$?
+  LC_ALL=C sort -k2,2 "$WORK/ab"
+  if [ "$_abrc" -ne 0 ]; then
+    echo "wildtest: regressions against $BASELINE" >&2
+    exit 1
+  fi
+fi

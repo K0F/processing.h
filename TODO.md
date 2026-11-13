@@ -181,7 +181,9 @@ shape/path subsystem. Each line below lands as its own commit.
 
 Strategy: Drive API completeness and transpiler robustness by continuous integration against major Processing sketch corpora. Each line below implies downloading, first-pass `wildtest`, A/B vs baseline, README update, and analysis of failure modes. Fixes will follow from this analysis.
 
-- [ ] `wildtest`: normalize temp-dir paths in status lines for clean A/B diffs `[1]`
+- [x] `wildtest`: normalize temp-dir paths in status lines for clean A/B diffs `[1]`
+- [x] `wildtest`: three-stage metric (transpile → link → headless run), `--json`/`--save`/`--baseline`, `-j N`, failure-bucket histogram, `applet/` exclusion `[1]`
+- [ ] `wildtest`: ship minimized repros for every bucket under `tests/sketches/wild/` and lock them into `ctest`, so a bucket cannot silently regress
 - [ ] Download + first-pass `./wildtest` + A/B vs pre-feature baseline + README row for `nature-of-code/noc-examples-processing` (2012–2018 era) `[2]`
 - [ ] Download + first-pass `./wildtest` + A/B vs pre-feature baseline + README row for `generative-design/Code-Package-Processing-1.5.1` (2011 era) `[2]`
 - [ ] Download + first-pass `./wildtest` + A/B vs pre-feature baseline + README row for `generative-design/Code-Package-Processing-2.x` (~2012 era) `[2]`

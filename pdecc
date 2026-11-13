@@ -72,31 +72,14 @@ TMP=$(mktemp -d /tmp/pdecc.XXXXXX)
 cleanup() { [ "$KEEP" = "1" ] || rm -rf "$TMP"; }
 trap cleanup EXIT INT TERM
 
-# rebuild transpiler only when its source changed
-if [ "$SCRIPT_DIR/pde2c.c" -nt "$SCRIPT_DIR/pde2c" ] || [ ! -x "$SCRIPT_DIR/pde2c" ]; then
-  gcc "$SCRIPT_DIR/pde2c.c" -o "$SCRIPT_DIR/pde2c" || exit 1
-fi
+. "$SCRIPT_DIR/pdecommon.sh"
 
-# rebuild precompiled header only when processing.h got newer; skip re-parsing
-# raylib/rlgl/raymath on every compile (cuts turnaround from ~3s to ~0.2s).
-if [ "$SCRIPT_DIR/processing.h" -nt "$SCRIPT_DIR/processing.h.gch" ] || \
-   [ ! -f "$SCRIPT_DIR/processing.h.gch" ]; then
-  if ! gcc $("$SCRIPT_DIR/pdedeps" --includes) -x c-header "$SCRIPT_DIR/processing.h" \
-       -o "$SCRIPT_DIR/processing.h.gch" 2>/dev/null; then
-    rm -f "$SCRIPT_DIR/processing.h.gch"   # stale/broken PCH: fall back to
-  fi                                       # slow path (never fatal)
-fi
+# rebuild transpiler and precompiled header only when their sources changed
+pde_build_transpiler "$SCRIPT_DIR" || exit 1
+pde_pch_update "$SCRIPT_DIR" || true   # a failed PCH build just means the slow path
 
 # ---- merge tabs: main tab first, then the rest alphabetically -------------
-{
-  printf '//@file %s\n' "$(basename "$MAIN_PDE")"
-  cat "$MAIN_PDE"
-  for f in $(find "$SKETCH_DIR" -maxdepth 1 -name '*.pde' | sort); do
-    [ "$f" = "$MAIN_PDE" ] && continue
-    printf '//@file %s\n' "$(basename "$f")"
-    cat "$f"
-  done
-} > "$TMP/combined.pde"
+pde_merge_tabs "$SKETCH_DIR" "$TMP/combined.pde"
 
 if ! grep -q '[^[:space:]]' "$TMP/combined.pde"; then
   echo "pdecc: no .pde content found in $SKETCH_DIR" >&2

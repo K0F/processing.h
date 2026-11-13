@@ -22,33 +22,14 @@ TMP=$(mktemp -d /tmp/pderun.XXXXXX)
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT INT TERM
 
-# rebuild transpiler only when its source changed
-if [ "$SCRIPT_DIR/pde2c.c" -nt "$SCRIPT_DIR/pde2c" ] || [ ! -x "$SCRIPT_DIR/pde2c" ]; then
-  gcc "$SCRIPT_DIR/pde2c.c" -o "$SCRIPT_DIR/pde2c" || exit 1
-fi
+. "$SCRIPT_DIR/pdecommon.sh"
 
-# rebuild precompiled header only when processing.h got newer. This skips
-# re-parsing raylib/rlgl/raymath on every compile, cutting turnaround from
-# ~3s to ~0.2s. It is built with the same -I flags used at consume time
-# (gcc requires the flags to match). PDE_NOPCH=1 ever builds correctly but
-# forces a from-scratch run if the PCH ever goes stale.
-if [ "${PDE_NOPCH:-0}" != "1" ] && \
-   { [ "$SCRIPT_DIR/processing.h" -nt "$SCRIPT_DIR/processing.h.gch" ] || [ ! -f "$SCRIPT_DIR/processing.h.gch" ]; }; then
-  gcc $("$SCRIPT_DIR/pdedeps" --includes) -x c-header "$SCRIPT_DIR/processing.h" \
-      -o "$SCRIPT_DIR/processing.h.gch" || exit 1
-fi
+# rebuild transpiler and precompiled header only when their sources changed
+pde_build_transpiler "$SCRIPT_DIR" || exit 1
+pde_pch_update "$SCRIPT_DIR" || exit 1
 
 # collect tabs: main tab first, then the rest alphabetically
-MAIN="$TMP/none.pde"
-[ -f "$DIR/$(basename "$DIR").pde" ] && MAIN="$DIR/$(basename "$DIR").pde"
-{
-  [ "$MAIN" != "$TMP/none.pde" ] && { printf '//@file %s\n' "$(basename "$MAIN")"; cat "$MAIN"; }
-  for f in $(find "$DIR" -maxdepth 1 -name '*.pde' | sort); do
-    [ "$f" = "$MAIN" ] && continue
-    printf '//@file %s\n' "$(basename "$f")"
-    cat "$f"
-  done
-} > "$TMP/combined.pde"
+pde_merge_tabs "$DIR" "$TMP/combined.pde"
 
 if ! grep -q '[^[:space:]]' "$TMP/combined.pde"; then
   echo "run: no .pde files found in $DIR" >&2

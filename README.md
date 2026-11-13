@@ -97,26 +97,55 @@ the library headers.
     58 library data checks and 63 library media checks — 282 checks total.
 -   `ctest --test-dir build` runs the editor and runtime suites (no window, no GPU, no audio needed).
 
-**Real-world corpus tests** run a batch of Processing sketches through the transpiler:
+**Real-world corpus tests** run a batch of Processing sketches through the
+transpiler. There are three stages, each a strictly harder question:
+
+| Stage | Flag | Question it answers |
+| :----- | :---- | :------------------- |
+| transpile | (default) | does `pde2c` emit C, and does it parse? |
+| link | `--link` | do all symbols resolve against the native libs? |
+| run | `--run` | does the binary survive a few seconds headless? |
 
 ```sh
 ./wildtest ~/src/2010                # transpile + gcc -fsyntax-only, per-sketch pass/fail
-./wildtest ~/src/LearningProcessing  # book corpus (2015, Processing 3 era)
+./wildtest --link -j8 ~/src/2010     # also link, so PASS means runnable
+./wildtest --run -j8 ~/src/2010      # also run each sketch headless (own Xvfb)
+./wildtest --save base.tsv ~/src/2010     # record a baseline
+./wildtest --baseline base.tsv ~/src/2010 # A/B it, exit 1 on any regression
+./wildtest --json out.json ~/src/2010     # machine-readable results
 ./corpus.sh ../2010                  # transpile + full link, summary to corpus-results.txt
 ```
 
-**Current corpus status:**
+Every run prints one line per sketch, a tally, and a histogram of failure
+buckets (`api-missing`, `lib-nameclash`, `lib-arity`, `pde2c-gap`,
+`source-broken`, `class-order`, `lib-pollution`) so the next fix can be
+chosen by size rather than by anecdote. Diagnostics are normalized against
+the rotating temp path, so two runs of the same tree diff byte-for-byte.
 
-| Corpus | Pass Rate |
-| :------------------------------- | :--------: |
-| 2010 sketch archive (`~/src/2010`) | 74/168 (44%) |
-| shiffman/LearningProcessing      | 172/428 (40%) |
+Two harness details are worth knowing. Sketch directories named `applet/`
+are skipped by default: archived Processing folders usually carry a pre-IDE-2
+copy under `applet/` that would otherwise double the denominator. And every
+script that compiles against `processing.h` shares `pdecommon.sh`, which
+invalidates the `.gch` when *any* header it nests changes — `gcc` does not
+revalidate headers inside a precompiled header, so a stale `.gch` silently
+compiles the old library API.
 
-Failures typically stem from Processing API that is still missing
-(`beginRaw`, `Capture.start()`, `Client.readStringUntil`, custom `Thread`
-subclasses) or from classic Applet-era sketches that call `setup()`/`draw()`
-by hand instead of letting the framework do it. The native library headers
-above lifted both corpora substantially (previously 21/168 and 122/428).
+**Current corpus status** (`~/src/2010`, 151 sketches after skipping
+`applet/` snapshots — 168 with them):
+
+| Stage | Result |
+| :---- | :----- |
+| transpile + compile | 62/151 (41%) |
+| ... plus link | 62/151 |
+| ... plus 3 s headless run | 60/151 (40%), 2 SIGSEGV |
+
+Largest buckets: `api-missing` 37, `pde2c-gap` 30, `lib-nameclash` 9,
+`lib-arity` 7. Failures typically stem from Processing API that is still
+missing (`beginRaw`, `Capture.start()`, `Client.readStringUntil`, custom
+`Thread` subclasses), from library types colliding with sketch symbols, or
+from classic Applet-era sketches that call `setup()`/`draw()` by hand
+instead of letting the framework do it. The native library headers above
+lifted both corpora substantially (previously 21/168 and 122/428).
 See [TODO.md](TODO.md) for the roadmap.
 
 
