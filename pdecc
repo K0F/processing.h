@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # pdecc — one-shot Processing-to-Raylib compiler CLI.
 #
 # Transpile + compile a .pde sketch into an optimized native binary in one

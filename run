@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # run — transpile + compile + execute Processing sketches in one shot.
 #
 #   ./run                    sketch from current directory

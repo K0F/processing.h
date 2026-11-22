@@ -1668,6 +1668,7 @@ static inline PeasyCam PeasyCam_ctor_impl(void *parent, ...) {
 #define PeasyCam_ctor(...) PeasyCam_ctor_impl(0, ##__VA_ARGS__)
 
 static inline void _ap_void(void) {}
+static inline void _ap_void_int(int v) { (void)v; }
 
 #ifndef _PDE_MINIM_DEFINED
 #include "libraries/minim.h"
@@ -1705,11 +1706,13 @@ static inline FullScreen FullScreen_ctor_impl(void *parent, ...) {
 }
 #define FullScreen_ctor(...) FullScreen_ctor_impl(0, ##__VA_ARGS__)
 
-// GSMovieMaker library stub
+// GSMovieMaker / GifMaker library stub
 typedef struct {
   void (*start)(void);
   void (*addFrame)(void);
   void (*finish)(void);
+  void (*setRepeat)(int);
+  void (*setDelay)(int);
 } GSMovieMaker;
 
 typedef GSMovieMaker MovieMaker;
@@ -1720,6 +1723,8 @@ static inline GSMovieMaker GSMovieMaker_ctor_impl(void *parent, ...) {
   mm.start = _ap_void;
   mm.addFrame = _ap_void;
   mm.finish = _ap_void;
+  mm.setRepeat = _ap_void_int;
+  mm.setDelay = _ap_void_int;
   return mm;
 }
 #define GSMovieMaker_ctor(...) GSMovieMaker_ctor_impl(0, ##__VA_ARGS__)
