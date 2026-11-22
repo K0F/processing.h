@@ -25,6 +25,9 @@ pdeide: static
 		$(shell ./pdedeps --includes) -DX11 $(shell ./pdedeps --libs)
 
 test:
+	gcc pde2c.c -o pde2c
+	./pde2c sketch.pde > sketch.c
+	gcc sketch.c -c -o /dev/null $(shell ./pdedeps --includes)
 	gcc tests/test_editor.c editor.c -o tests/test_editor -I. -Wall -Wextra \
 		-lm && ./tests/test_editor
 	gcc tests/test_math.c -o tests/test_math -I. $(shell ./pdedeps --includes) \

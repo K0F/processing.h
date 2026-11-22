@@ -4668,7 +4668,7 @@ int main(int argc, char *argv[]) {
         bool noArg = (i + 4 < num_tokens && tokens[i+4].type == TOKEN_SYMBOL &&
                       strcmp(tokens[i+4].text, ")") == 0);
         printf("_pde_ag_%s(%s%s", tokens[i+2].text, current.text, noArg ? "" : ", ");
-        i += 3;
+        i += noArg ? 5 : 4;
         continue;
       }
     }
@@ -4695,7 +4695,7 @@ int main(int argc, char *argv[]) {
 
       if (strcmp(obj, "PVector") == 0) {
         printf("pvector_%s(", method);
-        i += 3;
+        i += 4;
         continue;
       }
 
@@ -4717,14 +4717,14 @@ int main(int argc, char *argv[]) {
               printf("%s = pvector_%s(%s)", objName, method, objName);
             else
               printf("pvector_%s(%s)", method, objName);
-            i += 4;
+            i += 5;
             continue;
           } else {
             if (pvector_mutator_method(method))
               printf("%s = pvector_%s(%s, ", objName, method, objName);
             else
               printf("pvector_%s(%s, ", method, objName);
-            i += 3;
+            i += 4;
             continue;
           }
         }
