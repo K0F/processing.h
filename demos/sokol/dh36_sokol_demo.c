@@ -17,6 +17,7 @@
 #include "util/sokol_gl.h"
 
 #include "dh36_path.h"
+#include <string.h>
 
 static dh36_path_t path;
 static sg_pass_action pass_action;
@@ -66,7 +67,7 @@ static void cleanup(void) {
 sapp_desc sokol_main(int argc, char* argv[]) {
     bool half_size = false;
     for (int i = 1; i < argc; i++) {
-        if (argv[i][0] == '-' && argv[i][1] == 'h') {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--half") == 0) {
             half_size = true;
         }
     }
