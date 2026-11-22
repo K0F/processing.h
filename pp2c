@@ -1,47 +1,60 @@
 #!/usr/bin/env bash
+# pp2c — Transpile Processing (.pde) sketch to C via pde2c and compile with processing.h
 
-set -e # kill if it fails
+set -e
 
-# Path to processing.h
-PROCESSING_H_PATH="/home/kof/src/RaylibProcessing/processing.h"
+# Detect processing.h root
+if [ -d "/home/kof/src/processing.h" ]; then
+  PROCESSING_H_DIR="/home/kof/src/processing.h"
+elif [ -d "/home/kof/src/RaylibProcessing" ]; then
+  PROCESSING_H_DIR="/home/kof/src/RaylibProcessing"
+else
+  PROCESSING_H_DIR="$(pwd)"
+fi
+
+PROCESSING_H_PATH="$PROCESSING_H_DIR/processing.h"
 
 if [ -z "$1" ]; then
-  TARGET=`pwd`
+  TARGET="$(pwd)"
 else
-  TARGET=$(realpath "$1")
+  TARGET="$(realpath "$1")"
 fi
 
 if [ -d "$TARGET" ]; then
   SKETCH_DIR="$TARGET"
-  SKETCH_NAME=$(basename "$SKETCH_DIR")
+  SKETCH_NAME="$(basename "$SKETCH_DIR")"
   MAIN_PDE="$SKETCH_DIR/$SKETCH_NAME.pde"
 elif [ -f "$TARGET" ] && [ "${TARGET##*.}" = "pde" ]; then
   MAIN_PDE="$TARGET"
-  SKETCH_DIR=$(dirname "$MAIN_PDE")
-  SKETCH_NAME=$(basename "$SKETCH_DIR")
+  SKETCH_DIR="$(dirname "$MAIN_PDE")"
+  SKETCH_NAME="$(basename "$SKETCH_DIR")"
 else
-  echo "Error: Invalid target, it has to be sketch folder of .pde file."
+  echo "Error: Invalid target, must be a sketch folder or .pde file." >&2
   exit 1
 fi
 
 if [ ! -f "$MAIN_PDE" ]; then
-  echo "Error: Main sketch file should be in the folder of the same name!"
-  echo "Expected: $SKETCH_DIR/$(basename "$SKETCH_DIR").pde"
-  exit 1
+  # Fallback to first .pde in folder
+  FIRST_PDE=$(find "$SKETCH_DIR" -maxdepth 1 -name "*.pde" | head -n 1)
+  if [ -n "$FIRST_PDE" ]; then
+    MAIN_PDE="$FIRST_PDE"
+  else
+    echo "Error: Main sketch file not found in $SKETCH_DIR" >&2
+    exit 1
+  fi
 fi
 
 BUILD_DIR=$(mktemp -d -t pde-build.XXXXXX)
-
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
 COMBINED_PDE="$BUILD_DIR/combined.pde"
 OUTPUT_C="$BUILD_DIR/sketch.c"
+SAVED_C="$SKETCH_DIR/$SKETCH_NAME.c"
 BINARY="$BUILD_DIR/$SKETCH_NAME"
 
-echo "Concating sketch: $SKETCH_NAME"
-
+echo "Concatenating sketch: $SKETCH_NAME ($MAIN_PDE)"
 cat "$MAIN_PDE" > "$COMBINED_PDE"
-echo "" >> "$COMBINED_PDE" # Prevence, pokud chybí newline na konci souboru
+echo "" >> "$COMBINED_PDE"
 
 for f in "$SKETCH_DIR"/*.pde; do
   if [ -f "$f" ] && [ "$f" != "$MAIN_PDE" ]; then
@@ -51,26 +64,52 @@ for f in "$SKETCH_DIR"/*.pde; do
   fi
 done
 
-# HTML COLOR MASHING
-# Přepíše mřížku (#ffcc00) na čistý C hex formát (0xffcc00) přímo v combined.pde
+# HTML Color literal rewrite: #FFCC00 -> HEX_COLOR_FFCC00
 sed -i -E 's/#([0-9a-fA-F]{6})/HEX_COLOR_\1/g' "$COMBINED_PDE"
 
-# Kopírování headeru do build adresáře
+# Copy processing.h and libraries into build directory
 cp "$PROCESSING_H_PATH" "$BUILD_DIR/processing.h"
-HEADER_ROOT=$(dirname "$PROCESSING_H_PATH")
-cp "$HEADER_ROOT/terminus.ttf" "$BUILD_DIR/terminus.ttf"
+if [ -d "$PROCESSING_H_DIR/libraries" ]; then
+  cp -r "$PROCESSING_H_DIR/libraries" "$BUILD_DIR/"
+fi
+if [ -f "$PROCESSING_H_DIR/terminus.ttf" ]; then
+  cp "$PROCESSING_H_DIR/terminus.ttf" "$BUILD_DIR/"
+fi
+if [ -f "$PROCESSING_H_DIR/terminus_ttf.h" ]; then
+  cp "$PROCESSING_H_DIR/terminus_ttf.h" "$BUILD_DIR/"
+fi
 
-if ! pde2c "$COMBINED_PDE" > "$OUTPUT_C"; then
-  echo "Error: Transpil failed!"
+# Locate pde2c binary
+PDE2C_BIN=""
+if [ -x "$PROCESSING_H_DIR/pde2c" ]; then
+  PDE2C_BIN="$PROCESSING_H_DIR/pde2c"
+elif which pde2c >/dev/null 2>&1; then
+  PDE2C_BIN="$(which pde2c)"
+else
+  echo "Building pde2c..."
+  gcc "$PROCESSING_H_DIR/pde2c.c" -o "$PROCESSING_H_DIR/pde2c"
+  PDE2C_BIN="$PROCESSING_H_DIR/pde2c"
+fi
+
+echo "Transpiling with $PDE2C_BIN..."
+if ! "$PDE2C_BIN" "$COMBINED_PDE" > "$OUTPUT_C"; then
+  echo "Error: Transpilation failed!" >&2
   exit 1
 fi
 
-# HTML COLOR MASHING - Fáze 2: Překlopíme bezpečný název na čistý C hex literál pro GCC
-# Z HEX_COLOR_ffcc11 se v hotovém sketch.c stane 0xffcc11
+# HTML Color translation phase 2: HEX_COLOR_ffcc11 -> 0xffcc11
 sed -i -E 's/HEX_COLOR_([0-9a-fA-F]{6})/0x\1/g' "$OUTPUT_C"
 
-echo "Compiling in $BUILD_DIR..."
-gcc "$OUTPUT_C" -o "$BINARY" -O2 -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+# Save generated C alongside sketch
+cp "$OUTPUT_C" "$SAVED_C"
+echo "Saved transpiled C code to: $SAVED_C"
 
-echo "Running..."
+INCLUDES="-I$BUILD_DIR -I$PROCESSING_H_DIR -I/usr/include/freetype2 -I/usr/include/libpng16"
+LIBS="-lraylib -lfreetype -lGL -lm -lpthread -ldl -lrt -lX11"
+
+echo "Compiling C binary..."
+gcc "$OUTPUT_C" -o "$BINARY" -O2 $INCLUDES $LIBS
+
+echo "Compiled binary ready: $BINARY"
+echo "Running in $SKETCH_DIR..."
 (cd "$SKETCH_DIR" && "$BINARY")
