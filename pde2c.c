@@ -3381,6 +3381,28 @@ int tokenize(const char *source, Token **tokens_out, size_t capacity_in) {
   return t_count;
 }
 
+// Library types that sketches may also declare themselves. The headers keep
+// them under a Pde prefix (PdeRecorder); a sketch that does not shadow the
+// name gets the familiar Processing spelling back as a typedef. C has a single
+// namespace, so without this `class Recorder { ... }` collided with the
+// video library's Recorder and the sketch failed to compile at all.
+static const char *const _lib_type_aliases[] = {
+  "Recorder",
+  NULL
+};
+
+static void emit_library_aliases(void) {
+  for (int i = 0; _lib_type_aliases[i] != NULL; i++) {
+    if (is_class_name(_lib_type_aliases[i])) continue;
+    printf("typedef Pde%s %s;\n", _lib_type_aliases[i], _lib_type_aliases[i]);
+    // `new Recorder(...)` is rewritten to `Recorder_ctor(...)`; map that to the
+    // header's macro, which is deliberately not called Recorder_ctor so a
+    // sketch class of the same name keeps its own generated dispatch macro.
+    printf("#define %s_ctor Pde%s_ctor\n", _lib_type_aliases[i],
+           _lib_type_aliases[i]);
+  }
+}
+
 int main(int argc, char *argv[]) {
   if (argc < 2) {
     fprintf(stderr, "Použití: %s <soubor.pde>\n", argv[0]);
@@ -3603,6 +3625,11 @@ int main(int argc, char *argv[]) {
   printf("#include \"libraries/geomerative.h\"\n");
   printf("#include \"libraries/xml.h\"\n");
   printf("#include \"libraries/minim.h\"\n\n");
+
+  // Re-export library type names the sketch does not shadow (PdeRecorder ->
+  // Recorder), so `Recorder r;` keeps meaning the library type unless the
+  // sketch defines its own.
+  emit_library_aliases();
 
   // If the sketch declares global variables that clash with standard Processing
   // mode macros (e.g. float RADIUS), undefine them so the sketch variable is valid.

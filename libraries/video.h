@@ -246,13 +246,13 @@ typedef struct {
   int frameCount;
   void (*add)(void);
   void (*finish)(void);
-} Recorder;
+} PdeRecorder;
 
 static inline void _recorder_add(void) {}
 static inline void _recorder_finish(void) {}
 
-static inline Recorder Recorder_ctor_impl(const char *dir, const char *file) {
-  Recorder r;
+static inline PdeRecorder PdeRecorder_ctor_impl(const char *dir, const char *file) {
+  PdeRecorder r;
   memset(&r, 0, sizeof(r));
   if (dir) snprintf(r.dir, sizeof(r.dir), "%s", dir);
   if (file) snprintf(r.filename, sizeof(r.filename), "%s", file);
@@ -260,7 +260,10 @@ static inline Recorder Recorder_ctor_impl(const char *dir, const char *file) {
   r.finish = _recorder_finish;
   return r;
 }
-#define Recorder_ctor(...) Recorder_ctor_impl(__VA_ARGS__)
+// `Recorder` is a very common sketch class name, and C has one namespace, so
+// library types live under a Pde prefix; pde2c re-exports the Processing name
+// only when the sketch does not declare it (see emit_library_aliases).
+#define PdeRecorder_ctor(...) PdeRecorder_ctor_impl(__VA_ARGS__)
 
 #endif // _PDE_VIDEO_DEFINED
 
