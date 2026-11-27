@@ -245,7 +245,7 @@ static float _strokeW = 1.0f;
 static int _strokeCap = ROUND;
 static int _strokeJoin = MITER;
 static int _rectModeState = _PDE_CORNER;
-static int _ellipseModeState = _PDE_CORNER;
+static int _ellipseModeState = _PDE_CENTER;
 static int _textAlignState = LEFT;
 
 // input state ///////////////////////////////////////////////////////////
@@ -551,7 +551,13 @@ static inline void noiseSeed(unsigned long seed) {
 // PFont ////////////////////////////////////////////////////////////////
 
 static inline PFont loadFont2(const char *filename, int fontSize) {
-  PFont font = LoadFontEx(filename, fontSize, NULL, 0);
+  const char *target = filename;
+  char buf[512];
+  if (filename && !FileExists(filename)) {
+    snprintf(buf, sizeof(buf), "data/%s", filename);
+    if (FileExists(buf)) target = buf;
+  }
+  PFont font = LoadFontEx(target, fontSize, NULL, 0);
   SetTextureFilter(font.texture, TEXTURE_FILTER_POINT);
   return font;
 }
@@ -2263,7 +2269,13 @@ static inline float screenY(float x, float y, ...) { (void)x; return y; }
 static inline float screenZ(float x, float y, float z) { (void)x; (void)y; return z; }
 
 static inline PImage loadImage(const char *path) {
-  PImage img = LoadImage(path);
+  const char *target = path;
+  char buf[512];
+  if (path && !FileExists(path)) {
+    snprintf(buf, sizeof(buf), "data/%s", path);
+    if (FileExists(buf)) target = buf;
+  }
+  PImage img = LoadImage(target);
   if (img.data == NULL) {
     fprintf(stderr, "processing.h: loadImage(\"%s\") failed, using 1x1 blank\n", path);
     img = GenImageColor(1, 1, BLANK);
